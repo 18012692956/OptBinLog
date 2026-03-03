@@ -5,12 +5,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 #include <errno.h>
 #include <stdint.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <syslog.h>
 #include <time.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 static uint64_t now_ns(void) {
     struct timespec ts;
@@ -35,7 +38,7 @@ static uint64_t max_for_bits(int bits) {
 static void usage(const char* prog) {
     fprintf(stderr,
         "Usage:\n"
-        "  %s --mode text|binary --eventlog-dir <dir> --out-dir <dir> --devices N --records-per-device N [--shared <file>] [--strict-perm]\n",
+        "  %s --mode text|binary|syslog|ftrace --eventlog-dir <dir> --out-dir <dir> --devices N --records-per-device N [--shared <file>] [--strict-perm]\n",
         prog
     );
 }
@@ -47,6 +50,56 @@ static int ensure_dir(const char* path) {
         return -1;
     }
     if (mkdir(path, 0755) != 0) return -1;
+    return 0;
+}
+
+static int appendf(char** p, size_t* left, const char* fmt, ...) {
+    if (*left == 0) return -1;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(*p, *left, fmt, ap);
+    va_end(ap);
+    if (n < 0) return -1;
+    if ((size_t)n >= *left) return -1;
+    *p += n;
+    *left -= (size_t)n;
+    return 0;
+}
+
+static int format_text_payload(const OptbinlogTagDef* tag, long i, int device_id, uint64_t* rnd, char* out, size_t cap) {
+    char* p = out;
+    size_t left = cap;
+    if (appendf(&p, &left, "ts=%lld id=%d name=%s ", (long long)(1710000000 + i), tag->tag_id, tag->name) != 0) {
+        return -1;
+    }
+    for (int e = 0; e < tag->ele_num; e++) {
+        const OptbinlogTagEleDef* ele = &tag->eles[e];
+        if (e > 0 && appendf(&p, &left, ",") != 0) return -1;
+        if (ele->type_char == 'L') {
+            uint64_t v = xorshift64(rnd) & max_for_bits(ele->bits);
+            if (appendf(&p, &left, "%s=%llu", ele->name, (unsigned long long)v) != 0) return -1;
+        } else if (ele->type_char == 'D') {
+            double v = (double)(xorshift64(rnd) % 10000) / 100.0;
+            if (appendf(&p, &left, "%s=%.2f", ele->name, v) != 0) return -1;
+        } else if (ele->type_char == 'S') {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "dev-%02d", device_id);
+            if (appendf(&p, &left, "%s=\"%s\"", ele->name, buf) != 0) return -1;
+        }
+    }
+    return 0;
+}
+
+static int write_counter_file(const char* out_dir, int device_id, unsigned long long bytes) {
+    char path[512];
+    snprintf(path, sizeof(path), "%s/device_%02d.bytes", out_dir, device_id);
+    FILE* fp = fopen(path, "wb");
+    if (!fp) return -1;
+    if (fprintf(fp, "%llu\n", bytes) < 0) {
+        fclose(fp);
+        return -1;
+    }
+    fclose(fp);
     return 0;
 }
 
@@ -69,22 +122,13 @@ static int write_text_logs(const char* eventlog_dir, const char* out_dir, int de
     uint64_t rnd = 0x123456789abcdef0ULL ^ (uint64_t)device_id;
     for (long i = 0; i < records; i++) {
         OptbinlogTagDef* tag = &tags.items[i % tags.len];
-        fprintf(fp, "ts=%lld id=%d name=%s ", (long long)(1710000000 + i), tag->tag_id, tag->name);
-        for (int e = 0; e < tag->ele_num; e++) {
-            OptbinlogTagEleDef* ele = &tag->eles[e];
-            if (e > 0) fputc(',', fp);
-            if (ele->type_char == 'L') {
-                uint64_t v = xorshift64(&rnd) & max_for_bits(ele->bits);
-                fprintf(fp, "%s=%llu", ele->name, (unsigned long long)v);
-            } else if (ele->type_char == 'D') {
-                double v = (double)(xorshift64(&rnd) % 10000) / 100.0;
-                fprintf(fp, "%s=%.2f", ele->name, v);
-            } else if (ele->type_char == 'S') {
-                char buf[32];
-                snprintf(buf, sizeof(buf), "dev-%02d", device_id);
-                fprintf(fp, "%s=\"%s\"", ele->name, buf);
-            }
+        char line[1024];
+        if (format_text_payload(tag, i, device_id, &rnd, line, sizeof(line)) != 0) {
+            fclose(fp);
+            optbinlog_taglist_free(&tags);
+            return -1;
         }
+        fputs(line, fp);
         fputc('\n', fp);
     }
 
@@ -159,6 +203,82 @@ static int write_binary_logs(const char* eventlog_dir, const char* shared_path, 
     return rc;
 }
 
+static int write_syslog_logs(const char* eventlog_dir, const char* out_dir, int device_id, long records) {
+    OptbinlogTagList tags;
+    optbinlog_taglist_init(&tags);
+    if (optbinlog_parse_eventlog_dir(eventlog_dir, &tags) != 0 || tags.len == 0) {
+        optbinlog_taglist_free(&tags);
+        return -1;
+    }
+
+    int prio = LOG_DEBUG;
+    const char* prio_env = getenv("OPTBINLOG_SYSLOG_PRIO");
+    if (prio_env && prio_env[0]) prio = atoi(prio_env);
+
+    openlog("optbinlog_multi_bench", LOG_NDELAY | LOG_PID, LOG_USER);
+    uint64_t rnd = 0x123456789abcdef0ULL ^ (uint64_t)device_id;
+    unsigned long long bytes = 0;
+
+    for (long i = 0; i < records; i++) {
+        OptbinlogTagDef* tag = &tags.items[i % tags.len];
+        char line[1024];
+        if (format_text_payload(tag, i, device_id, &rnd, line, sizeof(line)) != 0) {
+            closelog();
+            optbinlog_taglist_free(&tags);
+            return -1;
+        }
+        syslog(prio, "%s", line);
+        bytes += (unsigned long long)strlen(line) + 1ULL;
+    }
+
+    closelog();
+    optbinlog_taglist_free(&tags);
+    return write_counter_file(out_dir, device_id, bytes);
+}
+
+static int write_ftrace_logs(const char* eventlog_dir, const char* out_dir, int device_id, long records) {
+    OptbinlogTagList tags;
+    optbinlog_taglist_init(&tags);
+    if (optbinlog_parse_eventlog_dir(eventlog_dir, &tags) != 0 || tags.len == 0) {
+        optbinlog_taglist_free(&tags);
+        return -1;
+    }
+
+    const char* trace_path = getenv("OPTBINLOG_TRACE_MARKER");
+    if (!trace_path || !trace_path[0]) {
+        trace_path = "/sys/kernel/debug/tracing/trace_marker";
+    }
+
+    int fd = open(trace_path, O_WRONLY | O_CLOEXEC);
+    if (fd < 0) {
+        optbinlog_taglist_free(&tags);
+        return -1;
+    }
+
+    uint64_t rnd = 0x123456789abcdef0ULL ^ (uint64_t)device_id;
+    unsigned long long bytes = 0;
+    for (long i = 0; i < records; i++) {
+        OptbinlogTagDef* tag = &tags.items[i % tags.len];
+        char line[1024];
+        if (format_text_payload(tag, i, device_id, &rnd, line, sizeof(line)) != 0) {
+            close(fd);
+            optbinlog_taglist_free(&tags);
+            return -1;
+        }
+        size_t len = strlen(line);
+        if (write(fd, line, len) != (ssize_t)len || write(fd, "\n", 1) != 1) {
+            close(fd);
+            optbinlog_taglist_free(&tags);
+            return -1;
+        }
+        bytes += (unsigned long long)len + 1ULL;
+    }
+
+    close(fd);
+    optbinlog_taglist_free(&tags);
+    return write_counter_file(out_dir, device_id, bytes);
+}
+
 static long long sum_sizes(const char* out_dir, const char* ext) {
     long long total = 0;
     for (int d = 0;; d++) {
@@ -170,6 +290,27 @@ static long long sum_sizes(const char* out_dir, const char* ext) {
             break;
         }
         total += (long long)st.st_size;
+    }
+    return total;
+}
+
+static long long sum_counters(const char* out_dir) {
+    long long total = 0;
+    for (int d = 0;; d++) {
+        char path[512];
+        snprintf(path, sizeof(path), "%s/device_%02d.bytes", out_dir, d);
+        FILE* fp = fopen(path, "rb");
+        if (!fp) {
+            if (d == 0) return -1;
+            break;
+        }
+        unsigned long long v = 0;
+        if (fscanf(fp, "%llu", &v) != 1) {
+            fclose(fp);
+            return -1;
+        }
+        fclose(fp);
+        total += (long long)v;
     }
     return total;
 }
@@ -230,6 +371,10 @@ int main(int argc, char** argv) {
                 rc = write_text_logs(eventlog_dir, out_dir, d, records);
             } else if (strcmp(mode, "binary") == 0) {
                 rc = write_binary_logs(eventlog_dir, shared_path, out_dir, d, records, strict_perm);
+            } else if (strcmp(mode, "syslog") == 0) {
+                rc = write_syslog_logs(eventlog_dir, out_dir, d, records);
+            } else if (strcmp(mode, "ftrace") == 0) {
+                rc = write_ftrace_logs(eventlog_dir, out_dir, d, records);
             } else {
                 rc = -1;
             }
@@ -255,17 +400,26 @@ int main(int argc, char** argv) {
     long long shared_bytes = 0;
     if (strcmp(mode, "text") == 0) {
         total_bytes = sum_sizes(out_dir, "txt");
-        printf("mode,text,devices,%d,records_per_device,%ld,elapsed_ms,%.3f,bytes,%lld,shared_bytes,0,total_bytes,%lld\n",
-               devices, records, elapsed_ms, total_bytes, total_bytes);
     } else if (strcmp(mode, "binary") == 0) {
         total_bytes = sum_sizes(out_dir, "bin");
         struct stat st;
         if (stat(shared_path, &st) == 0) {
             shared_bytes = (long long)st.st_size;
         }
-        printf("mode,binary,devices,%d,records_per_device,%ld,elapsed_ms,%.3f,bytes,%lld,shared_bytes,%lld,total_bytes,%lld\n",
-               devices, records, elapsed_ms, total_bytes, shared_bytes, total_bytes + shared_bytes);
+    } else if (strcmp(mode, "syslog") == 0 || strcmp(mode, "ftrace") == 0) {
+        total_bytes = sum_counters(out_dir);
+    } else {
+        fprintf(stderr, "unsupported mode: %s\n", mode);
+        return 1;
     }
+
+    if (total_bytes < 0) {
+        fprintf(stderr, "failed to collect output bytes for mode %s\n", mode);
+        return 1;
+    }
+
+    printf("mode,%s,devices,%d,records_per_device,%ld,elapsed_ms,%.3f,bytes,%lld,shared_bytes,%lld,total_bytes,%lld\n",
+           mode, devices, records, elapsed_ms, total_bytes, shared_bytes, total_bytes + shared_bytes);
 
     return 0;
 }
