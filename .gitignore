@@ -1,0 +1,19 @@
+# Binaries
+/demo/optbinlog_demo
+/demo/optbinlog_multi
+/demo/optbinlog_bench
+/demo/optbinlog_multi_bench
+/demo/optbinlog_init_race
+
+# Generated data
+/demo/*.bin
+/demo/bench/
+/demo/bench_multi/
+/demo/init_race/
+/demo/multi/
+
+# Python venv
+/demo/.venv/
+
+# macOS
+.DS_Store
