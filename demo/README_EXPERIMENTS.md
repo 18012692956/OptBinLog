@@ -34,3 +34,14 @@ python3 run_thesis_suite.py
 - 单机双平台相对提升图：`results/latest/single_highload/bench_dual_relative.svg`
 - 多设备双平台热力图：`results/latest/multi_device/bench_multi_dual_relative.svg`
 - 初始化竞争时序图：`results/latest/init_race/init_race_result.svg`
+
+## L1 Distributed Suite
+
+L1 用于“多节点 + 网络仿真”：
+
+```bash
+cd demo
+python3 run_l1_suite.py --config l1_config.example.json
+```
+
+详见：`README_L1.md`。

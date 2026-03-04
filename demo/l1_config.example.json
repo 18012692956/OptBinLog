@@ -1,0 +1,44 @@
+{
+  "tag": "l1_example",
+  "nodes": [
+    {
+      "name": "local-macos",
+      "transport": "local",
+      "workdir": "/Users/sky/Documents/graduation design/demo",
+      "python": "python3",
+      "bench_script": "run_bench.py",
+      "bench_bin": "./optbinlog_bench_macos",
+      "eventlog_dir": "./eventlogst",
+      "records": 40000,
+      "repeats": 3,
+      "warmup": 1,
+      "modes": "text,binary,syslog",
+      "baseline": "text"
+    },
+    {
+      "name": "linux-vm",
+      "transport": "prefix",
+      "prefix": ["limactl", "shell", "thesis-linux", "--"],
+      "workdir": "/Users/sky/Documents/graduation design/demo",
+      "python": "python3",
+      "build_cmd": "sudo -n sh -c 'for p in /sys/kernel/tracing/tracing_on /sys/kernel/debug/tracing/tracing_on; do if [ -w \"$p\" ]; then echo 1 > \"$p\"; exit 0; fi; done; exit 1'",
+      "bench_script": "run_bench.py",
+      "bench_bin": "./optbinlog_bench_linux",
+      "eventlog_dir": "./eventlogst",
+      "records": 40000,
+      "repeats": 3,
+      "warmup": 1,
+      "modes": "binary,ftrace",
+      "baseline": "binary",
+      "trace_marker": "/sys/kernel/tracing/trace_marker",
+      "bench_prefix": "sudo -n",
+      "netem": {
+        "iface": "eth0",
+        "delay_ms": 20,
+        "jitter_ms": 5,
+        "loss_pct": 0.5,
+        "rate_mbit": 50
+      }
+    }
+  ]
+}

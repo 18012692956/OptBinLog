@@ -206,6 +206,47 @@ static void derive_ftrace_read_path(const char* trace_path, char* out, size_t ou
     snprintf(out, out_cap, "%s", trace_path);
 }
 
+static void derive_ftrace_tracing_on_path(const char* trace_path, char* out, size_t out_cap) {
+    if (!trace_path || !trace_path[0]) {
+        snprintf(out, out_cap, "%s", "/sys/kernel/debug/tracing/tracing_on");
+        return;
+    }
+    const char* marker = "/trace_marker";
+    size_t n = strlen(trace_path);
+    size_t m = strlen(marker);
+    if (n > m && strcmp(trace_path + n - m, marker) == 0) {
+        size_t base = n - m;
+        if (base + strlen("/tracing_on") + 1 > out_cap) {
+            snprintf(out, out_cap, "%s", "/sys/kernel/debug/tracing/tracing_on");
+            return;
+        }
+        memcpy(out, trace_path, base);
+        out[base] = '\0';
+        strcat(out, "/tracing_on");
+        return;
+    }
+    snprintf(out, out_cap, "%s", "/sys/kernel/debug/tracing/tracing_on");
+}
+
+static int read_tracing_on(const char* path) {
+    FILE* fp = fopen(path, "rb");
+    if (!fp) return -1;
+    int ch = fgetc(fp);
+    fclose(fp);
+    if (ch == '0') return 0;
+    if (ch == '1') return 1;
+    return -1;
+}
+
+static int write_tracing_on(const char* path, int on) {
+    int fd = open(path, O_WRONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    const char v = on ? '1' : '0';
+    ssize_t n = write(fd, &v, 1);
+    close(fd);
+    return n == 1 ? 0 : -1;
+}
+
 static unsigned long long scan_ftrace_observed_bytes(const char* trace_read_path, const char* token) {
     if (!trace_read_path || !token || !token[0]) return 0;
     FILE* fp = fopen(trace_read_path, "rb");
@@ -226,9 +267,8 @@ static unsigned long long scan_ftrace_observed_bytes(const char* trace_read_path
 
 static void clear_ftrace_trace(const char* trace_read_path) {
     if (!trace_read_path || !trace_read_path[0]) return;
-    int fd = open(trace_read_path, O_WRONLY | O_CLOEXEC);
+    int fd = open(trace_read_path, O_WRONLY | O_TRUNC | O_CLOEXEC);
     if (fd < 0) return;
-    (void)write(fd, "", 0);
     close(fd);
 }
 
@@ -394,9 +434,14 @@ static int write_ftrace_logs(const char* eventlog_dir, const char* out_dir, int 
     if (!trace_path || !trace_path[0]) {
         trace_path = "/sys/kernel/debug/tracing/trace_marker";
     }
+    char tracing_on_path[PATH_MAX];
+    derive_ftrace_tracing_on_path(trace_path, tracing_on_path, sizeof(tracing_on_path));
+    int tracing_prev = read_tracing_on(tracing_on_path);
+    (void)write_tracing_on(tracing_on_path, 1);
 
     int fd = open(trace_path, O_WRONLY | O_CLOEXEC);
     if (fd < 0) {
+        if (tracing_prev == 0) (void)write_tracing_on(tracing_on_path, 0);
         syslog_line_list_free(&lines);
         return -1;
     }
@@ -410,12 +455,14 @@ static int write_ftrace_logs(const char* eventlog_dir, const char* out_dir, int 
                           run_token ? run_token : "OBENCH_FTRACE", device_id, line);
         if (nn < 0 || (size_t)nn >= sizeof(buf)) {
             close(fd);
+            if (tracing_prev == 0) (void)write_tracing_on(tracing_on_path, 0);
             syslog_line_list_free(&lines);
             return -1;
         }
         size_t len = (size_t)nn;
         if (write(fd, buf, len) != (ssize_t)len || write(fd, "\n", 1) != 1) {
             close(fd);
+            if (tracing_prev == 0) (void)write_tracing_on(tracing_on_path, 0);
             syslog_line_list_free(&lines);
             return -1;
         }
@@ -423,6 +470,7 @@ static int write_ftrace_logs(const char* eventlog_dir, const char* out_dir, int 
     }
 
     close(fd);
+    if (tracing_prev == 0) (void)write_tracing_on(tracing_on_path, 0);
     syslog_line_list_free(&lines);
     return write_counter_file(out_dir, device_id, bytes);
 }
@@ -571,8 +619,10 @@ int main(int argc, char** argv) {
         total_bytes = sum_counters(out_dir);
     } else if (strcmp(mode, "ftrace") == 0) {
         unsigned long long observed = scan_ftrace_observed_bytes(ftrace_read_path, ftrace_run_token);
-        if (observed > 0) total_bytes = (long long)observed;
-        else total_bytes = sum_counters(out_dir);
+        long long payload_total = sum_counters(out_dir);
+        if (payload_total < 0) payload_total = 0;
+        if ((unsigned long long)payload_total > observed) total_bytes = payload_total;
+        else total_bytes = (long long)observed;
     } else {
         fprintf(stderr, "unsupported mode: %s\n", mode);
         return 1;

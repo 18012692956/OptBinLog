@@ -213,6 +213,47 @@ static void derive_ftrace_read_path(const char* trace_path, char* out, size_t ou
     snprintf(out, out_cap, "%s", trace_path);
 }
 
+static void derive_ftrace_tracing_on_path(const char* trace_path, char* out, size_t out_cap) {
+    if (!trace_path || !trace_path[0]) {
+        snprintf(out, out_cap, "%s", "/sys/kernel/debug/tracing/tracing_on");
+        return;
+    }
+    const char* marker = "/trace_marker";
+    size_t n = strlen(trace_path);
+    size_t m = strlen(marker);
+    if (n > m && strcmp(trace_path + n - m, marker) == 0) {
+        size_t base = n - m;
+        if (base + strlen("/tracing_on") + 1 > out_cap) {
+            snprintf(out, out_cap, "%s", "/sys/kernel/debug/tracing/tracing_on");
+            return;
+        }
+        memcpy(out, trace_path, base);
+        out[base] = '\0';
+        strcat(out, "/tracing_on");
+        return;
+    }
+    snprintf(out, out_cap, "%s", "/sys/kernel/debug/tracing/tracing_on");
+}
+
+static int read_tracing_on(const char* path) {
+    FILE* fp = fopen(path, "rb");
+    if (!fp) return -1;
+    int ch = fgetc(fp);
+    fclose(fp);
+    if (ch == '0') return 0;
+    if (ch == '1') return 1;
+    return -1;
+}
+
+static int write_tracing_on(const char* path, int on) {
+    int fd = open(path, O_WRONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    const char v = on ? '1' : '0';
+    ssize_t n = write(fd, &v, 1);
+    close(fd);
+    return n == 1 ? 0 : -1;
+}
+
 static unsigned long long scan_ftrace_observed_bytes(const char* trace_read_path, const char* token) {
     if (!trace_read_path || !token || !token[0]) return 0;
     FILE* fp = fopen(trace_read_path, "rb");
@@ -234,9 +275,8 @@ static unsigned long long scan_ftrace_observed_bytes(const char* trace_read_path
 
 static void clear_ftrace_trace(const char* trace_read_path) {
     if (!trace_read_path || !trace_read_path[0]) return;
-    int fd = open(trace_read_path, O_WRONLY | O_CLOEXEC);
+    int fd = open(trace_read_path, O_WRONLY | O_TRUNC | O_CLOEXEC);
     if (fd < 0) return;
-    (void)write(fd, "", 0);
     close(fd);
 }
 
@@ -436,10 +476,15 @@ static int bench_ftrace(const char* eventlog_dir, long records) {
     if (!trace_path || !trace_path[0]) {
         trace_path = "/sys/kernel/debug/tracing/trace_marker";
     }
+    char tracing_on_path[PATH_MAX];
+    derive_ftrace_tracing_on_path(trace_path, tracing_on_path, sizeof(tracing_on_path));
+    int tracing_prev = read_tracing_on(tracing_on_path);
+    (void)write_tracing_on(tracing_on_path, 1);
 
     int fd = open(trace_path, O_WRONLY | O_CLOEXEC);
     if (fd < 0) {
         fprintf(stderr, "open trace_marker failed: %s\n", strerror(errno));
+        if (tracing_prev == 0) (void)write_tracing_on(tracing_on_path, 0);
         syslog_line_list_free(&lines);
         return -1;
     }
@@ -461,6 +506,7 @@ static int bench_ftrace(const char* eventlog_dir, long records) {
         int nn = snprintf(buf, sizeof(buf), "%s %s", token, line);
         if (nn < 0 || (size_t)nn >= sizeof(buf)) {
             close(fd);
+            if (tracing_prev == 0) (void)write_tracing_on(tracing_on_path, 0);
             syslog_line_list_free(&lines);
             return -1;
         }
@@ -468,6 +514,7 @@ static int bench_ftrace(const char* eventlog_dir, long records) {
         if (write(fd, buf, len) != (ssize_t)len || write(fd, "\n", 1) != 1) {
             fprintf(stderr, "write trace_marker failed: %s\n", strerror(errno));
             close(fd);
+            if (tracing_prev == 0) (void)write_tracing_on(tracing_on_path, 0);
             syslog_line_list_free(&lines);
             return -1;
         }
@@ -476,6 +523,7 @@ static int bench_ftrace(const char* eventlog_dir, long records) {
     uint64_t t_write1 = now_ns();
 
     close(fd);
+    if (tracing_prev == 0) (void)write_tracing_on(tracing_on_path, 0);
     syslog_line_list_free(&lines);
 
     uint64_t t_e2e1 = now_ns();
@@ -485,7 +533,10 @@ static int bench_ftrace(const char* eventlog_dir, long records) {
     double post_ms = (double)(t_e2e1 - t_write1) / 1e6;
     long rss = max_rss_kb();
     unsigned long long bytes_observed = scan_ftrace_observed_bytes(trace_read_path, token);
-    unsigned long long bytes = bytes_observed > 0 ? bytes_observed : (unsigned long long)bytes_payload;
+    unsigned long long bytes = (unsigned long long)bytes_payload;
+    if (bytes_observed > bytes) {
+        bytes = bytes_observed;
+    }
 
     printf("mode,ftrace,records,%ld,elapsed_ms,%.3f,write_only_ms,%.3f,end_to_end_ms,%.3f,prep_ms,%.3f,post_ms,%.3f,bytes,%llu,shared_bytes,0,total_bytes,%llu,peak_kb,%ld\n",
            records, write_ms, write_ms, end_to_end_ms, prep_ms, post_ms,
