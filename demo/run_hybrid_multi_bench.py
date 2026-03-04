@@ -17,9 +17,9 @@ MERGED_JSON = os.path.join(HYBRID_OUT, "bench_multi_merged.json")
 DUAL_HEATMAP_SVG = os.path.join(HYBRID_OUT, "bench_multi_dual_relative.svg")
 
 LOCAL_MODES = os.environ.get("OPTBINLOG_HYBRID_MULTI_LOCAL_MODES", "text,binary,syslog")
-LINUX_MODES = os.environ.get("OPTBINLOG_HYBRID_MULTI_LINUX_MODES", "text,binary,syslog,ftrace")
+LINUX_MODES = os.environ.get("OPTBINLOG_HYBRID_MULTI_LINUX_MODES", "binary,ftrace")
 LOCAL_BASELINE = os.environ.get("OPTBINLOG_MULTI_BASELINE", "text")
-LINUX_BASELINE = os.environ.get("OPTBINLOG_HYBRID_MULTI_LINUX_BASELINE", "text")
+LINUX_BASELINE = os.environ.get("OPTBINLOG_HYBRID_MULTI_LINUX_BASELINE", "binary")
 LINUX_INSTANCE = os.environ.get("OPTBINLOG_LINUX_INSTANCE", "thesis-linux")
 TRACE_MARKER = os.environ.get("OPTBINLOG_TRACE_MARKER", "/sys/kernel/tracing/trace_marker")
 
@@ -89,15 +89,51 @@ def build_linux_binary():
     run(["limactl", "shell", LINUX_INSTANCE, "--", "bash", "-lc", script], cwd=PROJECT)
 
 
-def ensure_linux_trace_marker_access():
+def detect_linux_ftrace_sink():
+    candidates = []
+    preferred = (TRACE_MARKER or "").strip()
+    if preferred:
+        candidates.append(preferred)
+    for p in [
+        "/sys/kernel/tracing/trace_marker",
+        "/sys/kernel/debug/tracing/trace_marker",
+        "/sys/kernel/tracing/trace",
+        "/sys/kernel/debug/tracing/trace",
+    ]:
+        if p not in candidates:
+            candidates.append(p)
+
+    cand_str = " ".join([json.dumps(p) for p in candidates])
     script = (
-        "set -e; "
-        f"if sudo test -e {json.dumps(TRACE_MARKER)}; then "
-        f"  sudo chgrp sky {json.dumps(TRACE_MARKER)} || true; "
-        f"  sudo chmod g+w {json.dumps(TRACE_MARKER)} || true; "
-        "fi"
+        "set -euo pipefail; "
+        f"for p in {cand_str}; do "
+        "  if sudo -n test -e \"$p\"; then "
+        "    if sudo -n bash -lc \"echo codex_probe > \\\"$p\\\"\" >/dev/null 2>&1; then "
+        "      echo \"$p\"; exit 0; "
+        "    fi; "
+        "  fi; "
+        "done; "
+        "exit 1"
     )
-    run(["limactl", "shell", LINUX_INSTANCE, "--", "bash", "-lc", script], cwd=PROJECT)
+    proc = subprocess.run(
+        ["limactl", "shell", LINUX_INSTANCE, "--", "bash", "-lc", script],
+        cwd=PROJECT,
+        text=True,
+        capture_output=True,
+    )
+    sink = ""
+    for ln in reversed((proc.stdout or "").splitlines()):
+        x = ln.strip()
+        if x.startswith("/sys/"):
+            sink = x
+            break
+    if not sink:
+        raise RuntimeError(
+            "no writable ftrace sink found in Linux VM\nstdout:\n{}\nstderr:\n{}".format(
+                proc.stdout or "", proc.stderr or ""
+            )
+        )
+    return sink
 
 
 def run_local(local_modes):
@@ -124,12 +160,13 @@ def run_local(local_modes):
 
 
 def run_linux(linux_modes):
+    trace_sink = detect_linux_ftrace_sink()
     linux_env = {
         "OPTBINLOG_MULTI_OUT_DIR": LINUX_OUT,
         "OPTBINLOG_MULTI_BIN": LINUX_BIN,
         "OPTBINLOG_MULTI_MODES": ",".join(linux_modes),
         "OPTBINLOG_MULTI_BASELINE": LINUX_BASELINE if LINUX_BASELINE in linux_modes else linux_modes[0],
-        "OPTBINLOG_TRACE_MARKER": TRACE_MARKER,
+        "OPTBINLOG_TRACE_MARKER": trace_sink,
     }
     propagate_env(
         os.environ,
@@ -146,7 +183,7 @@ def run_linux(linux_modes):
         ],
     )
     exports = " ".join([f"{k}={json.dumps(v)}" for k, v in linux_env.items()])
-    script = "set -euo pipefail; " + f"cd {json.dumps(ROOT)}; " + f"export {exports}; " + "python3 run_multi_bench.py"
+    script = "set -euo pipefail; " + f"cd {json.dumps(ROOT)}; " + f"export {exports}; " + "sudo -n -E python3 run_multi_bench.py"
     run(["limactl", "shell", LINUX_INSTANCE, "--", "bash", "-lc", script], cwd=PROJECT)
 
 
@@ -302,7 +339,6 @@ def main():
     build_local_binary()
     run_local(local_modes)
     build_linux_binary()
-    ensure_linux_trace_marker_access()
     run_linux(linux_modes)
 
     with open(os.path.join(LOCAL_OUT, "bench_multi_result.json"), "r", encoding="utf-8") as f:

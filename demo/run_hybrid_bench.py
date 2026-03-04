@@ -19,9 +19,9 @@ MERGED_STATS_SVG = os.path.join(HYBRID_OUT, "bench_stats_merged.svg")
 DUAL_RELATIVE_SVG = os.path.join(HYBRID_OUT, "bench_dual_relative.svg")
 
 LOCAL_MODES = os.environ.get("OPTBINLOG_HYBRID_LOCAL_MODES", "text,binary,syslog")
-LINUX_MODES = os.environ.get("OPTBINLOG_HYBRID_LINUX_MODES", "ftrace")
+LINUX_MODES = os.environ.get("OPTBINLOG_HYBRID_LINUX_MODES", "binary,ftrace")
 BASELINE_MODE = os.environ.get("OPTBINLOG_BENCH_BASELINE", "text")
-LINUX_BASELINE_MODE = os.environ.get("OPTBINLOG_HYBRID_LINUX_BASELINE", "text")
+LINUX_BASELINE_MODE = os.environ.get("OPTBINLOG_HYBRID_LINUX_BASELINE", "binary")
 FORCE_LOCAL_BASELINE = os.environ.get("OPTBINLOG_HYBRID_FORCE_LOCAL_BASELINE", "1") != "0"
 FORCE_LINUX_BASELINE = os.environ.get("OPTBINLOG_HYBRID_FORCE_LINUX_BASELINE", "1") != "0"
 
@@ -504,15 +504,51 @@ def build_linux_binary():
     run(["limactl", "shell", LINUX_INSTANCE, "--", "bash", "-lc", script], cwd=PROJECT)
 
 
-def ensure_linux_trace_marker_access():
+def detect_linux_ftrace_sink():
+    candidates = []
+    preferred = (TRACE_MARKER or "").strip()
+    if preferred:
+        candidates.append(preferred)
+    for p in [
+        "/sys/kernel/tracing/trace_marker",
+        "/sys/kernel/debug/tracing/trace_marker",
+        "/sys/kernel/tracing/trace",
+        "/sys/kernel/debug/tracing/trace",
+    ]:
+        if p not in candidates:
+            candidates.append(p)
+
+    cand_str = " ".join([json.dumps(p) for p in candidates])
     script = (
-        "set -e; "
-        f"if sudo test -e {json.dumps(TRACE_MARKER)}; then "
-        f"  sudo chgrp sky {json.dumps(TRACE_MARKER)} || true; "
-        f"  sudo chmod g+w {json.dumps(TRACE_MARKER)} || true; "
-        "fi"
+        "set -euo pipefail; "
+        f"for p in {cand_str}; do "
+        "  if sudo -n test -e \"$p\"; then "
+        "    if sudo -n bash -lc \"echo codex_probe > \\\"$p\\\"\" >/dev/null 2>&1; then "
+        "      echo \"$p\"; exit 0; "
+        "    fi; "
+        "  fi; "
+        "done; "
+        "exit 1"
     )
-    run(["limactl", "shell", LINUX_INSTANCE, "--", "bash", "-lc", script], cwd=PROJECT)
+    proc = subprocess.run(
+        ["limactl", "shell", LINUX_INSTANCE, "--", "bash", "-lc", script],
+        cwd=PROJECT,
+        text=True,
+        capture_output=True,
+    )
+    sink = ""
+    for ln in reversed((proc.stdout or "").splitlines()):
+        x = ln.strip()
+        if x.startswith("/sys/"):
+            sink = x
+            break
+    if not sink:
+        raise RuntimeError(
+            "no writable ftrace sink found in Linux VM\nstdout:\n{}\nstderr:\n{}".format(
+                proc.stdout or "", proc.stderr or ""
+            )
+        )
+    return sink
 
 
 def run_local(modes):
@@ -526,12 +562,13 @@ def run_local(modes):
 
 
 def run_linux(modes):
+    trace_sink = detect_linux_ftrace_sink()
     linux_env = {
         "OPTBINLOG_BENCH_MODES": ",".join(modes),
         "OPTBINLOG_BENCH_BASELINE": LINUX_BASELINE_MODE if LINUX_BASELINE_MODE in modes else modes[0],
         "OPTBINLOG_BENCH_BIN": LINUX_BIN,
         "OPTBINLOG_BENCH_OUT_DIR": LINUX_OUT,
-        "OPTBINLOG_TRACE_MARKER": TRACE_MARKER,
+        "OPTBINLOG_TRACE_MARKER": trace_sink,
     }
     for k in [
         "OPTBINLOG_BENCH_RECORDS",
@@ -544,7 +581,7 @@ def run_linux(modes):
             linux_env[k] = os.environ[k]
 
     exports = " ".join([f"{k}={json.dumps(v)}" for k, v in linux_env.items()])
-    script = "set -euo pipefail; " + f"cd {json.dumps(ROOT)}; " + f"export {exports}; " + "python3 run_bench.py"
+    script = "set -euo pipefail; " + f"cd {json.dumps(ROOT)}; " + f"export {exports}; " + "sudo -n -E python3 run_bench.py"
     run(["limactl", "shell", LINUX_INSTANCE, "--", "bash", "-lc", script], cwd=PROJECT)
 
 
@@ -559,7 +596,6 @@ def main():
     build_local_binary()
     run_local(local_modes)
     build_linux_binary()
-    ensure_linux_trace_marker_access()
     run_linux(linux_modes)
 
     local_json = os.path.join(LOCAL_OUT, "bench_result.json")

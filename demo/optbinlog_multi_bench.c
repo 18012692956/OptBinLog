@@ -14,6 +14,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <limits.h>
 
 static uint64_t now_ns(void) {
     struct timespec ts;
@@ -183,6 +184,54 @@ static int load_syslog_lines(const char* eventlog_dir, SyslogLineList* out) {
     return 0;
 }
 
+static void derive_ftrace_read_path(const char* trace_path, char* out, size_t out_cap) {
+    if (!trace_path || !trace_path[0]) {
+        snprintf(out, out_cap, "%s", "/sys/kernel/debug/tracing/trace");
+        return;
+    }
+    const char* marker = "/trace_marker";
+    size_t n = strlen(trace_path);
+    size_t m = strlen(marker);
+    if (n > m && strcmp(trace_path + n - m, marker) == 0) {
+        size_t base = n - m;
+        if (base + strlen("/trace") + 1 > out_cap) {
+            snprintf(out, out_cap, "%s", trace_path);
+            return;
+        }
+        memcpy(out, trace_path, base);
+        out[base] = '\0';
+        strcat(out, "/trace");
+        return;
+    }
+    snprintf(out, out_cap, "%s", trace_path);
+}
+
+static unsigned long long scan_ftrace_observed_bytes(const char* trace_read_path, const char* token) {
+    if (!trace_read_path || !token || !token[0]) return 0;
+    FILE* fp = fopen(trace_read_path, "rb");
+    if (!fp) return 0;
+    unsigned long long total = 0;
+    char* line = NULL;
+    size_t cap = 0;
+    ssize_t n = 0;
+    while ((n = getline(&line, &cap, fp)) != -1) {
+        if (strstr(line, token) != NULL) {
+            total += (unsigned long long)n;
+        }
+    }
+    free(line);
+    fclose(fp);
+    return total;
+}
+
+static void clear_ftrace_trace(const char* trace_read_path) {
+    if (!trace_read_path || !trace_read_path[0]) return;
+    int fd = open(trace_read_path, O_WRONLY | O_CLOEXEC);
+    if (fd < 0) return;
+    (void)write(fd, "", 0);
+    close(fd);
+}
+
 static int format_text_payload(const OptbinlogTagDef* tag, long i, int device_id, uint64_t* rnd, char* out, size_t cap) {
     char* p = out;
     size_t left = cap;
@@ -335,7 +384,7 @@ static int write_syslog_logs(const char* eventlog_dir, const char* out_dir, int 
     return write_counter_file(out_dir, device_id, bytes);
 }
 
-static int write_ftrace_logs(const char* eventlog_dir, const char* out_dir, int device_id, long records) {
+static int write_ftrace_logs(const char* eventlog_dir, const char* out_dir, int device_id, long records, const char* run_token) {
     SyslogLineList lines;
     if (load_syslog_lines(eventlog_dir, &lines) != 0 || lines.len == 0) {
         return -1;
@@ -356,8 +405,16 @@ static int write_ftrace_logs(const char* eventlog_dir, const char* out_dir, int 
     unsigned long long bytes = 0;
     for (long i = 0; i < records; i++) {
         const char* line = lines.items[(size_t)(i % (long)lines.len)];
-        size_t len = strlen(line);
-        if (write(fd, line, len) != (ssize_t)len || write(fd, "\n", 1) != 1) {
+        char buf[1536];
+        int nn = snprintf(buf, sizeof(buf), "%s dev=%02d %s",
+                          run_token ? run_token : "OBENCH_FTRACE", device_id, line);
+        if (nn < 0 || (size_t)nn >= sizeof(buf)) {
+            close(fd);
+            syslog_line_list_free(&lines);
+            return -1;
+        }
+        size_t len = (size_t)nn;
+        if (write(fd, buf, len) != (ssize_t)len || write(fd, "\n", 1) != 1) {
             close(fd);
             syslog_line_list_free(&lines);
             return -1;
@@ -414,6 +471,8 @@ int main(int argc, char** argv) {
     int devices = 10;
     long records = 1000;
     int strict_perm = 0;
+    char ftrace_run_token[96] = {0};
+    char ftrace_read_path[PATH_MAX] = {0};
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--mode") == 0 && i + 1 < argc) {
@@ -442,13 +501,24 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    uint64_t t0 = now_ns();
+    uint64_t t0 = 0;
     if (strcmp(mode, "binary") == 0) {
         if (optbinlog_shared_init_from_dir(eventlog_dir, shared_path, strict_perm) != 0) {
             fprintf(stderr, "shared init failed\n");
             return 1;
         }
+    } else if (strcmp(mode, "ftrace") == 0) {
+        snprintf(ftrace_run_token, sizeof(ftrace_run_token),
+                 "OBENCH_FTRACE_MULTI_%d_%llu",
+                 (int)getpid(), (unsigned long long)now_ns());
+        const char* trace_path = getenv("OPTBINLOG_TRACE_MARKER");
+        if (!trace_path || !trace_path[0]) {
+            trace_path = "/sys/kernel/debug/tracing/trace_marker";
+        }
+        derive_ftrace_read_path(trace_path, ftrace_read_path, sizeof(ftrace_read_path));
+        clear_ftrace_trace(ftrace_read_path);
     }
+    t0 = now_ns();
 
     for (int d = 0; d < devices; d++) {
         pid_t pid = fork();
@@ -465,7 +535,7 @@ int main(int argc, char** argv) {
             } else if (strcmp(mode, "syslog") == 0) {
                 rc = write_syslog_logs(eventlog_dir, out_dir, d, records);
             } else if (strcmp(mode, "ftrace") == 0) {
-                rc = write_ftrace_logs(eventlog_dir, out_dir, d, records);
+                rc = write_ftrace_logs(eventlog_dir, out_dir, d, records, ftrace_run_token);
             } else {
                 rc = -1;
             }
@@ -497,8 +567,12 @@ int main(int argc, char** argv) {
         if (stat(shared_path, &st) == 0) {
             shared_bytes = (long long)st.st_size;
         }
-    } else if (strcmp(mode, "syslog") == 0 || strcmp(mode, "ftrace") == 0) {
+    } else if (strcmp(mode, "syslog") == 0) {
         total_bytes = sum_counters(out_dir);
+    } else if (strcmp(mode, "ftrace") == 0) {
+        unsigned long long observed = scan_ftrace_observed_bytes(ftrace_read_path, ftrace_run_token);
+        if (observed > 0) total_bytes = (long long)observed;
+        else total_bytes = sum_counters(out_dir);
     } else {
         fprintf(stderr, "unsupported mode: %s\n", mode);
         return 1;

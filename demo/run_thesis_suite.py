@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import run_platform_suite
 
 
 ROOT = os.path.dirname(__file__)
@@ -19,6 +20,23 @@ def run_cmd(cmd, env=None):
             )
         )
     return proc.stdout
+
+
+def build_local_init_race():
+    cmd = [
+        "clang",
+        "-O2",
+        "-Wall",
+        "-Wextra",
+        "-std=c11",
+        "-Iinclude",
+        "-o",
+        os.path.join(ROOT, "optbinlog_init_race"),
+        "optbinlog_init_race.c",
+        "src/optbinlog_shared.c",
+        "src/optbinlog_eventlog.c",
+    ]
+    run_cmd(cmd)
 
 
 def to_num(v):
@@ -83,6 +101,42 @@ def summarize_init(path):
     }
 
 
+def collect_linux_platform_info(target_path):
+    cmd = [
+        "limactl",
+        "shell",
+        os.environ.get("OPTBINLOG_LINUX_INSTANCE", "thesis-linux"),
+        "--",
+        "bash",
+        "-lc",
+        "cd "
+        + json.dumps(ROOT)
+        + "; python3 -c "
+        + json.dumps(
+            "import json,run_platform_suite as r; "
+            + f"print(json.dumps(r.collect_platform_info({json.dumps(target_path)}), ensure_ascii=False))"
+        ),
+    ]
+    proc = subprocess.run(cmd, text=True, capture_output=True)
+    out = (proc.stdout or "").strip()
+    if not out:
+        return {
+            "error": "empty output from linux platform collection",
+            "stderr": proc.stderr,
+            "returncode": proc.returncode,
+        }
+    line = out.splitlines()[-1]
+    try:
+        return json.loads(line)
+    except json.JSONDecodeError:
+        return {
+            "error": "invalid json from linux platform collection",
+            "stdout_tail": line,
+            "stderr": proc.stderr,
+            "returncode": proc.returncode,
+        }
+
+
 def write_summary(report_path, tag, cfg, single_sum, multi_sum, init_sum):
     lines = []
     lines.append(f"# Thesis Suite Report ({tag})")
@@ -92,6 +146,10 @@ def write_summary(report_path, tag, cfg, single_sum, multi_sum, init_sum):
     lines.append(f"- 单机高负载：records={cfg['single_records']}, repeats={cfg['single_repeats']}, warmup={cfg['single_warmup']}")
     lines.append(f"- 多设备：devices={cfg['multi_scan_devices']}, rpd={cfg['multi_scan_rpd']}, repeats={cfg['multi_repeats']}, warmup={cfg['multi_warmup']}")
     lines.append(f"- 竞争模拟：procs={cfg['init_procs']}, repeats={cfg['init_repeats']}, warmup={cfg['init_warmup']}")
+    if "platform_meta" in cfg:
+        pm = cfg["platform_meta"]
+        lines.append(f"- 平台(local): arch={pm['local'].get('host', {}).get('arch')} kernel={pm['local'].get('host', {}).get('kernel_release')} fs={pm['local'].get('storage', {}).get('filesystem')} medium={pm['local'].get('storage', {}).get('medium')}")
+        lines.append(f"- 平台(linux): arch={pm['linux'].get('host', {}).get('arch')} kernel={pm['linux'].get('host', {}).get('kernel_release')} fs={pm['linux'].get('storage', {}).get('filesystem')} medium={pm['linux'].get('storage', {}).get('medium')}")
     lines.append("")
     lines.append("## 单机高负载（双基线）")
     lines.append("")
@@ -148,7 +206,7 @@ def main():
         "single_records": int(os.environ.get("OPTBINLOG_SUITE_SINGLE_RECORDS", "120000")),
         "single_repeats": int(os.environ.get("OPTBINLOG_SUITE_SINGLE_REPEATS", "12")),
         "single_warmup": int(os.environ.get("OPTBINLOG_SUITE_SINGLE_WARMUP", "2")),
-        "multi_scan_devices": os.environ.get("OPTBINLOG_SUITE_MULTI_SCAN_DEVICES", "1,2,4,8,12"),
+        "multi_scan_devices": os.environ.get("OPTBINLOG_SUITE_MULTI_SCAN_DEVICES", "1,2,4,8,12,16"),
         "multi_scan_rpd": os.environ.get("OPTBINLOG_SUITE_MULTI_SCAN_RPD", "1000,2000"),
         "multi_repeats": int(os.environ.get("OPTBINLOG_SUITE_MULTI_REPEATS", "8")),
         "multi_warmup": int(os.environ.get("OPTBINLOG_SUITE_MULTI_WARMUP", "2")),
@@ -164,9 +222,9 @@ def main():
         {
             "OPTBINLOG_HYBRID_OUT_DIR": single_out,
             "OPTBINLOG_HYBRID_LOCAL_MODES": "text,binary,syslog",
-            "OPTBINLOG_HYBRID_LINUX_MODES": "text,binary,syslog,ftrace",
+            "OPTBINLOG_HYBRID_LINUX_MODES": "binary,ftrace",
             "OPTBINLOG_BENCH_BASELINE": "text",
-            "OPTBINLOG_HYBRID_LINUX_BASELINE": "text",
+            "OPTBINLOG_HYBRID_LINUX_BASELINE": "binary",
             "OPTBINLOG_BENCH_RECORDS": str(cfg["single_records"]),
             "OPTBINLOG_BENCH_REPEATS": str(cfg["single_repeats"]),
             "OPTBINLOG_BENCH_WARMUP": str(cfg["single_warmup"]),
@@ -181,9 +239,9 @@ def main():
         {
             "OPTBINLOG_HYBRID_MULTI_OUT_DIR": multi_out,
             "OPTBINLOG_HYBRID_MULTI_LOCAL_MODES": "text,binary,syslog",
-            "OPTBINLOG_HYBRID_MULTI_LINUX_MODES": "text,binary,syslog,ftrace",
+            "OPTBINLOG_HYBRID_MULTI_LINUX_MODES": "binary,ftrace",
             "OPTBINLOG_MULTI_BASELINE": "text",
-            "OPTBINLOG_HYBRID_MULTI_LINUX_BASELINE": "text",
+            "OPTBINLOG_HYBRID_MULTI_LINUX_BASELINE": "binary",
             "OPTBINLOG_MULTI_REPEATS": str(cfg["multi_repeats"]),
             "OPTBINLOG_MULTI_WARMUP": str(cfg["multi_warmup"]),
             "OPTBINLOG_SCAN_DEVICES": cfg["multi_scan_devices"],
@@ -194,6 +252,7 @@ def main():
 
     # 3) Init-race local only
     init_out = os.path.join(out, "init_race")
+    build_local_init_race()
     env_init = os.environ.copy()
     env_init.update(
         {
@@ -205,10 +264,16 @@ def main():
     )
     run_cmd(["python3", os.path.join(ROOT, "run_init_race.py")], env=env_init)
 
+    platform_meta = {
+        "local": run_platform_suite.collect_platform_info(out),
+        "linux": collect_linux_platform_info(out),
+    }
+
     summary = {
         "tag": tag,
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "config": cfg,
+        "platform_meta": platform_meta,
         "artifacts": {
             "single_merged_json": os.path.join(single_out, "bench_result_merged.json"),
             "single_dual_svg": os.path.join(single_out, "bench_dual_relative.svg"),
@@ -225,6 +290,7 @@ def main():
     single_sum = summarize_single(summary["artifacts"]["single_merged_json"])
     multi_sum = summarize_multi(summary["artifacts"]["multi_merged_json"])
     init_sum = summarize_init(summary["artifacts"]["init_result_json"])
+    cfg["platform_meta"] = platform_meta
     report_path = os.path.join(out, "suite_report.md")
     write_summary(report_path, tag, cfg, single_sum, multi_sum, init_sum)
 

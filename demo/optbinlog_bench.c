@@ -15,6 +15,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <limits.h>
 
 typedef enum {
     MODE_TEXT = 0,
@@ -188,6 +189,55 @@ static int load_syslog_lines(const char* eventlog_dir, SyslogLineList* out) {
         }
     }
     return 0;
+}
+
+static void derive_ftrace_read_path(const char* trace_path, char* out, size_t out_cap) {
+    if (!trace_path || !trace_path[0]) {
+        snprintf(out, out_cap, "%s", "/sys/kernel/debug/tracing/trace");
+        return;
+    }
+    const char* marker = "/trace_marker";
+    size_t n = strlen(trace_path);
+    size_t m = strlen(marker);
+    if (n > m && strcmp(trace_path + n - m, marker) == 0) {
+        size_t base = n - m;
+        if (base + strlen("/trace") + 1 > out_cap) {
+            snprintf(out, out_cap, "%s", trace_path);
+            return;
+        }
+        memcpy(out, trace_path, base);
+        out[base] = '\0';
+        strcat(out, "/trace");
+        return;
+    }
+    snprintf(out, out_cap, "%s", trace_path);
+}
+
+static unsigned long long scan_ftrace_observed_bytes(const char* trace_read_path, const char* token) {
+    if (!trace_read_path || !token || !token[0]) return 0;
+    FILE* fp = fopen(trace_read_path, "rb");
+    if (!fp) return 0;
+
+    unsigned long long total = 0;
+    char* line = NULL;
+    size_t cap = 0;
+    ssize_t n = 0;
+    while ((n = getline(&line, &cap, fp)) != -1) {
+        if (strstr(line, token) != NULL) {
+            total += (unsigned long long)n;
+        }
+    }
+    free(line);
+    fclose(fp);
+    return total;
+}
+
+static void clear_ftrace_trace(const char* trace_read_path) {
+    if (!trace_read_path || !trace_read_path[0]) return;
+    int fd = open(trace_read_path, O_WRONLY | O_CLOEXEC);
+    if (fd < 0) return;
+    (void)write(fd, "", 0);
+    close(fd);
 }
 
 static int format_text_payload(const OptbinlogTagDef* tag, long i, uint64_t* rnd, char* out, size_t cap) {
@@ -376,8 +426,6 @@ static int bench_syslog(const char* eventlog_dir, long records) {
 }
 
 static int bench_ftrace(const char* eventlog_dir, long records) {
-    uint64_t t_e2e0 = now_ns();
-
     SyslogLineList lines;
     if (load_syslog_lines(eventlog_dir, &lines) != 0 || lines.len == 0) {
         fprintf(stderr, "no ftrace lines loaded\n");
@@ -396,19 +444,34 @@ static int bench_ftrace(const char* eventlog_dir, long records) {
         return -1;
     }
 
-    uint64_t bytes = 0;
+    char token[96];
+    snprintf(token, sizeof(token), "OBENCH_FTRACE_%d_%llu",
+             (int)getpid(), (unsigned long long)now_ns());
+    char trace_read_path[PATH_MAX];
+    derive_ftrace_read_path(trace_path, trace_read_path, sizeof(trace_read_path));
+    clear_ftrace_trace(trace_read_path);
+
+    uint64_t bytes_payload = 0;
+    uint64_t t_e2e0 = now_ns();
 
     uint64_t t_write0 = now_ns();
     for (long i = 0; i < records; i++) {
         const char* line = lines.items[(size_t)(i % (long)lines.len)];
-        size_t len = strlen(line);
-        if (write(fd, line, len) != (ssize_t)len || write(fd, "\n", 1) != 1) {
+        char buf[1400];
+        int nn = snprintf(buf, sizeof(buf), "%s %s", token, line);
+        if (nn < 0 || (size_t)nn >= sizeof(buf)) {
+            close(fd);
+            syslog_line_list_free(&lines);
+            return -1;
+        }
+        size_t len = (size_t)nn;
+        if (write(fd, buf, len) != (ssize_t)len || write(fd, "\n", 1) != 1) {
             fprintf(stderr, "write trace_marker failed: %s\n", strerror(errno));
             close(fd);
             syslog_line_list_free(&lines);
             return -1;
         }
-        bytes += (uint64_t)len + 1;
+        bytes_payload += (uint64_t)len + 1;
     }
     uint64_t t_write1 = now_ns();
 
@@ -421,6 +484,8 @@ static int bench_ftrace(const char* eventlog_dir, long records) {
     double prep_ms = (double)(t_write0 - t_e2e0) / 1e6;
     double post_ms = (double)(t_e2e1 - t_write1) / 1e6;
     long rss = max_rss_kb();
+    unsigned long long bytes_observed = scan_ftrace_observed_bytes(trace_read_path, token);
+    unsigned long long bytes = bytes_observed > 0 ? bytes_observed : (unsigned long long)bytes_payload;
 
     printf("mode,ftrace,records,%ld,elapsed_ms,%.3f,write_only_ms,%.3f,end_to_end_ms,%.3f,prep_ms,%.3f,post_ms,%.3f,bytes,%llu,shared_bytes,0,total_bytes,%llu,peak_kb,%ld\n",
            records, write_ms, write_ms, end_to_end_ms, prep_ms, post_ms,
