@@ -16,11 +16,21 @@ cd demo
 python3 run_thesis_suite.py
 ```
 
+如果希望 Linux 侧避免 9p 挂载影响（推荐），先把 `demo` 同步到 Linux VM 本地 ext4，再运行：
+
+```bash
+cd demo
+OPTBINLOG_HYBRID_LINUX_WORKDIR=/home/sky.linux/optbinlog/demo \
+OPTBINLOG_HYBRID_MULTI_LINUX_WORKDIR=/home/sky.linux/optbinlog/demo \
+python3 run_thesis_suite.py
+```
+
 会执行：
 
 1. 单机高负载（本地 + Linux）
 2. 多设备模拟（本地 + Linux）
 3. 初始化竞争（仅本地）
+4. Binary 多设备竞争（仅本地）
 
 并生成：
 
@@ -33,6 +43,7 @@ python3 run_thesis_suite.py
 
 - 单机双平台相对提升图：`results/latest/single_highload/bench_dual_relative.svg`
 - 多设备双平台热力图：`results/latest/multi_device/bench_multi_dual_relative.svg`
+- Binary 多设备竞争扫描图：`results/latest/binary_contention/bench_multi_scan.svg`
 - 初始化竞争时序图：`results/latest/init_race/init_race_result.svg`
 
 ## L1 Distributed Suite

@@ -39,6 +39,24 @@ def build_local_init_race():
     run_cmd(cmd)
 
 
+def build_local_multi_binary():
+    cmd = [
+        "clang",
+        "-O2",
+        "-Wall",
+        "-Wextra",
+        "-std=c11",
+        "-Iinclude",
+        "-o",
+        os.path.join(ROOT, "optbinlog_multi_bench_macos"),
+        "optbinlog_multi_bench.c",
+        "src/optbinlog_shared.c",
+        "src/optbinlog_eventlog.c",
+        "src/optbinlog_binlog.c",
+    ]
+    run_cmd(cmd)
+
+
 def to_num(v):
     try:
         return float(v)
@@ -101,6 +119,28 @@ def summarize_init(path):
     }
 
 
+def summarize_binary_contention(path):
+    data = load_json(path)
+    rows = []
+    for sc in data.get("scenarios", []):
+        b = sc.get("summary", {}).get("binary", {})
+        rows.append(
+            {
+                "scenario": sc.get("scenario"),
+                "devices": sc.get("devices"),
+                "records_per_device": sc.get("records_per_device"),
+                "elapsed_mean_ms": b.get("elapsed_ms", {}).get("mean"),
+                "throughput_mean_rps": b.get("throughput_rps", {}).get("mean"),
+                "total_bytes_mean": b.get("total_bytes", {}).get("mean"),
+            }
+        )
+    rows.sort(key=lambda x: (int(x.get("devices") or 0), int(x.get("records_per_device") or 0)))
+    return {
+        "baseline": data.get("config", {}).get("baseline_mode"),
+        "rows": rows,
+    }
+
+
 def collect_linux_platform_info(target_path):
     cmd = [
         "limactl",
@@ -137,7 +177,7 @@ def collect_linux_platform_info(target_path):
         }
 
 
-def write_summary(report_path, tag, cfg, single_sum, multi_sum, init_sum):
+def write_summary(report_path, tag, cfg, single_sum, multi_sum, init_sum, bin_cont):
     lines = []
     lines.append(f"# Thesis Suite Report ({tag})")
     lines.append("")
@@ -192,6 +232,14 @@ def write_summary(report_path, tag, cfg, single_sum, multi_sum, init_sum):
     lines.append(f"- open_existing_ok_mean: {init_sum['open_existing_ok_mean']:.3f}")
     lines.append(f"- init_done_mean: {init_sum['init_done_mean']:.3f}")
     lines.append("")
+    lines.append("## Binary 多设备竞争（仅本地）")
+    lines.append("")
+    lines.append(f"- baseline: `{bin_cont['baseline']}`")
+    for row in bin_cont["rows"]:
+        lines.append(
+            f"- {row['scenario']}: d={row['devices']}, rpd={row['records_per_device']}, elapsed_mean={to_num(row['elapsed_mean_ms']):.3f} ms, throughput={to_num(row['throughput_mean_rps']):.1f} rps, total_bytes={to_num(row['total_bytes_mean']):.1f}"
+        )
+    lines.append("")
     with open(report_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
 
@@ -210,10 +258,15 @@ def main():
         "multi_scan_rpd": os.environ.get("OPTBINLOG_SUITE_MULTI_SCAN_RPD", "1000,2000"),
         "multi_repeats": int(os.environ.get("OPTBINLOG_SUITE_MULTI_REPEATS", "8")),
         "multi_warmup": int(os.environ.get("OPTBINLOG_SUITE_MULTI_WARMUP", "2")),
+        "binary_scan_devices": os.environ.get("OPTBINLOG_SUITE_BINARY_SCAN_DEVICES", "1,2,4,8,12,16,24"),
+        "binary_scan_rpd": os.environ.get("OPTBINLOG_SUITE_BINARY_SCAN_RPD", "2000"),
+        "binary_repeats": int(os.environ.get("OPTBINLOG_SUITE_BINARY_REPEATS", "10")),
+        "binary_warmup": int(os.environ.get("OPTBINLOG_SUITE_BINARY_WARMUP", "2")),
         "init_procs": int(os.environ.get("OPTBINLOG_SUITE_INIT_PROCS", "32")),
         "init_repeats": int(os.environ.get("OPTBINLOG_SUITE_INIT_REPEATS", "20")),
         "init_warmup": int(os.environ.get("OPTBINLOG_SUITE_INIT_WARMUP", "3")),
     }
+    linux_workdir = os.environ.get("OPTBINLOG_HYBRID_LINUX_WORKDIR", ROOT)
 
     # 1) Single high-load dual-platform
     single_out = os.path.join(out, "single_highload")
@@ -222,7 +275,7 @@ def main():
         {
             "OPTBINLOG_HYBRID_OUT_DIR": single_out,
             "OPTBINLOG_HYBRID_LOCAL_MODES": "text,binary,syslog",
-            "OPTBINLOG_HYBRID_LINUX_MODES": "binary,ftrace",
+            "OPTBINLOG_HYBRID_LINUX_MODES": "text,binary,ftrace",
             "OPTBINLOG_BENCH_BASELINE": "text",
             "OPTBINLOG_HYBRID_LINUX_BASELINE": "binary",
             "OPTBINLOG_BENCH_RECORDS": str(cfg["single_records"]),
@@ -239,7 +292,7 @@ def main():
         {
             "OPTBINLOG_HYBRID_MULTI_OUT_DIR": multi_out,
             "OPTBINLOG_HYBRID_MULTI_LOCAL_MODES": "text,binary,syslog",
-            "OPTBINLOG_HYBRID_MULTI_LINUX_MODES": "binary,ftrace",
+            "OPTBINLOG_HYBRID_MULTI_LINUX_MODES": "text,binary,ftrace",
             "OPTBINLOG_MULTI_BASELINE": "text",
             "OPTBINLOG_HYBRID_MULTI_LINUX_BASELINE": "binary",
             "OPTBINLOG_MULTI_REPEATS": str(cfg["multi_repeats"]),
@@ -250,7 +303,25 @@ def main():
     )
     run_cmd(["python3", os.path.join(ROOT, "run_hybrid_multi_bench.py")], env=env_multi)
 
-    # 3) Init-race local only
+    # 3) Binary contention local only
+    bin_cont_out = os.path.join(out, "binary_contention")
+    build_local_multi_binary()
+    env_bin = os.environ.copy()
+    env_bin.update(
+        {
+            "OPTBINLOG_MULTI_OUT_DIR": bin_cont_out,
+            "OPTBINLOG_MULTI_BIN": os.path.join(ROOT, "optbinlog_multi_bench_macos"),
+            "OPTBINLOG_MULTI_MODES": "binary",
+            "OPTBINLOG_MULTI_BASELINE": "binary",
+            "OPTBINLOG_MULTI_REPEATS": str(cfg["binary_repeats"]),
+            "OPTBINLOG_MULTI_WARMUP": str(cfg["binary_warmup"]),
+            "OPTBINLOG_SCAN_DEVICES": cfg["binary_scan_devices"],
+            "OPTBINLOG_SCAN_RECORDS_PER_DEVICE": cfg["binary_scan_rpd"],
+        }
+    )
+    run_cmd(["python3", os.path.join(ROOT, "run_multi_bench.py")], env=env_bin)
+
+    # 4) Init-race local only
     init_out = os.path.join(out, "init_race")
     build_local_init_race()
     env_init = os.environ.copy()
@@ -266,7 +337,7 @@ def main():
 
     platform_meta = {
         "local": run_platform_suite.collect_platform_info(out),
-        "linux": collect_linux_platform_info(out),
+        "linux": collect_linux_platform_info(linux_workdir),
     }
 
     summary = {
@@ -279,6 +350,8 @@ def main():
             "single_dual_svg": os.path.join(single_out, "bench_dual_relative.svg"),
             "multi_merged_json": os.path.join(multi_out, "bench_multi_merged.json"),
             "multi_dual_svg": os.path.join(multi_out, "bench_multi_dual_relative.svg"),
+            "binary_contention_json": os.path.join(bin_cont_out, "bench_multi_result.json"),
+            "binary_contention_svg": os.path.join(bin_cont_out, "bench_multi_scan.svg"),
             "init_result_json": os.path.join(init_out, "init_race_result.json"),
             "init_timeline_svg": os.path.join(init_out, "init_race_result.svg"),
         },
@@ -290,9 +363,10 @@ def main():
     single_sum = summarize_single(summary["artifacts"]["single_merged_json"])
     multi_sum = summarize_multi(summary["artifacts"]["multi_merged_json"])
     init_sum = summarize_init(summary["artifacts"]["init_result_json"])
+    bin_cont = summarize_binary_contention(summary["artifacts"]["binary_contention_json"])
     cfg["platform_meta"] = platform_meta
     report_path = os.path.join(out, "suite_report.md")
-    write_summary(report_path, tag, cfg, single_sum, multi_sum, init_sum)
+    write_summary(report_path, tag, cfg, single_sum, multi_sum, init_sum, bin_cont)
 
     latest = os.path.join(RESULTS_ROOT, "latest")
     if os.path.islink(latest) or os.path.exists(latest):
@@ -308,6 +382,7 @@ def main():
     export_dir = os.path.join(out, "key_svgs")
     safe_copy(summary["artifacts"]["single_dual_svg"], export_dir)
     safe_copy(summary["artifacts"]["multi_dual_svg"], export_dir)
+    safe_copy(summary["artifacts"]["binary_contention_svg"], export_dir)
     safe_copy(summary["artifacts"]["init_timeline_svg"], export_dir)
 
     print("saved", summary_path)

@@ -1,14 +1,18 @@
 import json
+import io
 import os
+import shutil
 import subprocess
+import tarfile
 
 
 ROOT = os.path.dirname(__file__)
 RUN_BENCH = os.path.join(ROOT, "run_bench.py")
 PROJECT = os.path.abspath(os.path.join(ROOT, ".."))
+LINUX_WORKDIR = os.environ.get("OPTBINLOG_HYBRID_LINUX_WORKDIR", ROOT)
 
 LOCAL_BIN = os.path.join(ROOT, "optbinlog_bench_macos")
-LINUX_BIN = os.path.join(ROOT, "optbinlog_bench_linux")
+LINUX_BIN = os.environ.get("OPTBINLOG_HYBRID_LINUX_BIN", os.path.join(LINUX_WORKDIR, "optbinlog_bench_linux"))
 
 HYBRID_OUT = os.environ.get("OPTBINLOG_HYBRID_OUT_DIR", os.path.join(ROOT, "bench", "hybrid"))
 LOCAL_OUT = os.path.join(HYBRID_OUT, "local")
@@ -27,6 +31,10 @@ FORCE_LINUX_BASELINE = os.environ.get("OPTBINLOG_HYBRID_FORCE_LINUX_BASELINE", "
 
 LINUX_INSTANCE = os.environ.get("OPTBINLOG_LINUX_INSTANCE", "thesis-linux")
 TRACE_MARKER = os.environ.get("OPTBINLOG_TRACE_MARKER", "/sys/kernel/tracing/trace_marker")
+LINUX_REMOTE_OUT = os.environ.get(
+    "OPTBINLOG_HYBRID_LINUX_OUT_DIR",
+    LINUX_OUT if os.path.abspath(LINUX_WORKDIR) == os.path.abspath(ROOT) else os.path.join(LINUX_WORKDIR, "bench", "hybrid_linux"),
+)
 
 
 def run(cmd, env=None, cwd=None):
@@ -38,6 +46,50 @@ def run(cmd, env=None, cwd=None):
             )
         )
     return proc.stdout
+
+
+def run_linux_shell(script, text=True):
+    proc = subprocess.run(
+        ["limactl", "shell", LINUX_INSTANCE, "--", "bash", "-lc", script],
+        cwd=PROJECT,
+        text=text,
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "linux command failed\ncmd: {}\nstdout:\n{}\nstderr:\n{}".format(
+                script,
+                proc.stdout if text else "<binary>",
+                proc.stderr if text else "<binary>",
+            )
+        )
+    return proc
+
+
+def pull_linux_dir(remote_dir, local_dir):
+    remote_abs = os.path.abspath(remote_dir)
+    local_abs = os.path.abspath(local_dir)
+    if remote_abs == local_abs:
+        return
+
+    script = "cd " + json.dumps(remote_dir) + "; sudo -n tar -cf - ."
+    proc = subprocess.run(
+        ["limactl", "shell", LINUX_INSTANCE, "--", "bash", "-lc", script],
+        cwd=PROJECT,
+        text=False,
+        capture_output=True,
+    )
+    stderr = (proc.stderr or b"").decode("utf-8", errors="replace")
+    recoverable = "file changed as we read it" in stderr.lower()
+    if proc.returncode != 0 and not (proc.returncode == 1 and recoverable):
+        raise RuntimeError(f"pull linux dir failed: {remote_dir}\nstderr:\n{stderr}")
+
+    if os.path.exists(local_dir):
+        shutil.rmtree(local_dir)
+    os.makedirs(local_dir, exist_ok=True)
+    bio = io.BytesIO(proc.stdout or b"")
+    with tarfile.open(fileobj=bio, mode="r:") as tf:
+        tf.extractall(local_dir)
 
 
 def parse_modes(raw):
@@ -441,6 +493,8 @@ def merge_results(local_data, linux_data):
             "active_modes": list(summary.keys()),
             "baseline_mode": global_baseline,
             "linux_instance": LINUX_INSTANCE,
+            "linux_workdir": LINUX_WORKDIR,
+            "linux_remote_out_dir": LINUX_REMOTE_OUT,
             "trace_marker": TRACE_MARKER,
             "linux_baseline_mode": linux_baseline,
         },
@@ -496,12 +550,12 @@ def build_local_binary():
 def build_linux_binary():
     script = (
         "set -euo pipefail; "
-        f"cd {json.dumps(ROOT)}; "
+        f"cd {json.dumps(LINUX_WORKDIR)}; "
         "gcc -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L "
         "-Iinclude -o optbinlog_bench_linux optbinlog_bench.c "
         "src/optbinlog_shared.c src/optbinlog_eventlog.c src/optbinlog_binlog.c"
     )
-    run(["limactl", "shell", LINUX_INSTANCE, "--", "bash", "-lc", script], cwd=PROJECT)
+    run_linux_shell(script)
 
 
 def detect_linux_ftrace_sink():
@@ -567,7 +621,7 @@ def run_linux(modes):
         "OPTBINLOG_BENCH_MODES": ",".join(modes),
         "OPTBINLOG_BENCH_BASELINE": LINUX_BASELINE_MODE if LINUX_BASELINE_MODE in modes else modes[0],
         "OPTBINLOG_BENCH_BIN": LINUX_BIN,
-        "OPTBINLOG_BENCH_OUT_DIR": LINUX_OUT,
+        "OPTBINLOG_BENCH_OUT_DIR": LINUX_REMOTE_OUT,
         "OPTBINLOG_TRACE_MARKER": trace_sink,
     }
     for k in [
@@ -581,8 +635,15 @@ def run_linux(modes):
             linux_env[k] = os.environ[k]
 
     exports = " ".join([f"{k}={json.dumps(v)}" for k, v in linux_env.items()])
-    script = "set -euo pipefail; " + f"cd {json.dumps(ROOT)}; " + f"export {exports}; " + "sudo -n -E python3 run_bench.py"
-    run(["limactl", "shell", LINUX_INSTANCE, "--", "bash", "-lc", script], cwd=PROJECT)
+    script = (
+        "set -euo pipefail; "
+        + f"cd {json.dumps(LINUX_WORKDIR)}; "
+        + f"sudo -n rm -rf {json.dumps(LINUX_REMOTE_OUT)}; "
+        + f"export {exports}; "
+        + "sudo -n -E python3 run_bench.py"
+    )
+    run_linux_shell(script)
+    pull_linux_dir(LINUX_REMOTE_OUT, LINUX_OUT)
 
 
 def main():
