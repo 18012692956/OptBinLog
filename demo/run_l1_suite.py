@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import concurrent.futures
 import datetime as dt
 import io
 import json
@@ -8,6 +9,7 @@ import shlex
 import shutil
 import subprocess
 import tarfile
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -47,6 +49,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--config", required=True, help="Path to L1 config JSON")
     p.add_argument("--tag", default="", help="Override run tag")
     p.add_argument("--keep-remote-out", action="store_true", help="Do not remove remote output after pulling")
+    p.add_argument("--no-parallel", action="store_true", help="Run nodes sequentially")
     return p.parse_args()
 
 
@@ -257,6 +260,121 @@ def collect_platform_meta(node: NodeExecutor) -> Dict[str, Any]:
         return {"error": "platform meta invalid json", "line": line}
 
 
+def bench_uses_sudo(node: NodeExecutor) -> bool:
+    bench_prefix = str(node.node.get("bench_prefix", "")).strip()
+    return bench_prefix.startswith("sudo ")
+
+
+def remote_out_prepare_cmd(node: NodeExecutor, remote_out: str) -> str:
+    q = shlex.quote(remote_out)
+    if bench_uses_sudo(node):
+        sudo_prefix = str(node.node.get("sudo_prefix", "sudo -n")).strip()
+        return f"{sudo_prefix} mkdir -p {q}"
+    return f"mkdir -p {q}"
+
+
+def remote_out_cleanup_cmd(node: NodeExecutor, remote_out: str) -> str:
+    q = shlex.quote(remote_out)
+    if bench_uses_sudo(node):
+        sudo_prefix = str(node.node.get("sudo_prefix", "sudo -n")).strip()
+        return f"{sudo_prefix} rm -rf {q} || true"
+    return f"rm -rf {q} || true"
+
+
+def build_start_gate_cmd(node: NodeExecutor, start_at_epoch: Optional[float]) -> str:
+    if start_at_epoch is None:
+        return ""
+    gate_py = f"import time; t={start_at_epoch:.6f}; n=time.time(); d=t-n; time.sleep(d if d>0 else 0.0)"
+    py = shlex.quote(str(node.node["python"]))
+    return f"{py} -c {shlex.quote(gate_py)}"
+
+
+def run_one_node(
+    raw_node: Dict[str, Any],
+    *,
+    index: int,
+    out_root: str,
+    tag: str,
+    keep_remote_out: bool,
+    start_at_epoch: Optional[float],
+) -> Tuple[int, Dict[str, Any]]:
+    node = NodeExecutor(raw_node)
+    node_rec: Dict[str, Any] = {
+        "name": node.name,
+        "transport": node.transport,
+        "status": "running",
+        "started_at": utc_now(),
+    }
+    if start_at_epoch is not None:
+        node_rec["scheduled_start_at_epoch"] = start_at_epoch
+
+    local_node_out = os.path.join(out_root, "nodes", node.name)
+    ensure_dir(local_node_out)
+    remote_out = node.node.get("remote_out_dir") or os.path.join(node.workdir, "bench_l1", tag, node.name)
+    node_rec["remote_out_dir"] = remote_out
+
+    try:
+        build_cmd = raw_node.get("build_cmd")
+        if isinstance(build_cmd, str) and build_cmd.strip():
+            node.run_in_workdir(build_cmd, check=True)
+
+        node.run_in_workdir(remote_out_cleanup_cmd(node, remote_out), check=False)
+        node.run_in_workdir(remote_out_prepare_cmd(node, remote_out), check=True)
+
+        applied = netem_apply(node)
+        if applied:
+            node_rec["netem"] = applied
+
+        bench_env = build_bench_env(node, remote_out)
+        env_inline = " ".join(f"{k}={shlex.quote(v)}" for k, v in bench_env.items())
+        bench_script = str(node.node["bench_script"])
+        bench_prefix = str(node.node.get("bench_prefix", "")).strip()
+        py_cmd = f"{shlex.quote(str(node.node['python']))} {shlex.quote(bench_script)}"
+        if bench_prefix:
+            run_cmd_main = f"{bench_prefix} env {env_inline} {py_cmd}"
+        else:
+            run_cmd_main = f"export {env_inline}; {py_cmd}"
+
+        gate_cmd = build_start_gate_cmd(node, start_at_epoch)
+        if gate_cmd:
+            run_cmd = f"{gate_cmd}; {run_cmd_main}"
+        else:
+            run_cmd = run_cmd_main
+
+        proc = node.run_in_workdir(run_cmd, check=True)
+        with open(os.path.join(local_node_out, "runner.stdout.log"), "w", encoding="utf-8") as f:
+            f.write(proc.stdout or "")
+        with open(os.path.join(local_node_out, "runner.stderr.log"), "w", encoding="utf-8") as f:
+            f.write(proc.stderr or "")
+
+        pulled_out = os.path.join(local_node_out, "bench_out")
+        node.pull_dir(remote_out, pulled_out)
+        bench_json_path = os.path.join(pulled_out, "bench_result.json")
+        if not os.path.exists(bench_json_path):
+            raise RuntimeError(f"missing bench_result.json for node {node.name}")
+
+        bench_json = read_json(bench_json_path)
+        node_rec["summary"] = summarize_node_bench(bench_json)
+        node_rec["platform_meta"] = collect_platform_meta(node)
+        node_rec["status"] = "ok"
+    except Exception as e:
+        node_rec["status"] = "failed"
+        node_rec["error"] = str(e)
+    finally:
+        try:
+            netem_clear(node)
+        except Exception:
+            pass
+        if not keep_remote_out:
+            try:
+                node.run_in_workdir(remote_out_cleanup_cmd(node, remote_out), check=False)
+            except Exception:
+                pass
+        node_rec["finished_at"] = utc_now()
+
+    return index, node_rec
+
+
 def write_markdown_report(path: str, tag: str, run_nodes: List[Dict[str, Any]]) -> None:
     lines: List[str] = []
     lines.append(f"# L1 Distributed Report ({tag})")
@@ -395,85 +513,52 @@ def main() -> None:
     ensure_dir(out_root)
     ensure_dir(os.path.join(out_root, "nodes"))
 
-    run_nodes: List[Dict[str, Any]] = []
+    parallel_enabled = bool(cfg.get("parallel", True)) and not args.no_parallel
+    max_workers_cfg = int(cfg.get("max_workers", len(nodes_cfg)))
+    max_workers = max(1, min(len(nodes_cfg), max_workers_cfg))
+    start_sync_delay_s = float(cfg.get("start_sync_delay_s", 3.0))
+    start_at_epoch = None
+    if parallel_enabled:
+        start_at_epoch = time.time() + max(0.0, start_sync_delay_s)
 
-    for raw_node in nodes_cfg:
-        node = NodeExecutor(raw_node)
-        node_rec: Dict[str, Any] = {
-            "name": node.name,
-            "transport": node.transport,
-            "status": "running",
-            "started_at": utc_now(),
-        }
-        run_nodes.append(node_rec)
-        local_node_out = os.path.join(out_root, "nodes", node.name)
-        ensure_dir(local_node_out)
-
-        remote_out = raw_node.get("remote_out_dir") or os.path.join(node.workdir, "bench_l1", tag, node.name)
-        node_rec["remote_out_dir"] = remote_out
-
-        try:
-            # Optional build step.
-            build_cmd = raw_node.get("build_cmd")
-            if isinstance(build_cmd, str) and build_cmd.strip():
-                node.run_in_workdir(build_cmd, check=True)
-
-            # Prepare remote output dir.
-            node.run_in_workdir(f"mkdir -p {shlex.quote(remote_out)}", check=True)
-
-            # Apply network emulation.
-            applied = netem_apply(node)
-            if applied:
-                node_rec["netem"] = applied
-
-            # Run benchmark.
-            bench_env = build_bench_env(node, remote_out)
-            env_inline = " ".join(f"{k}={shlex.quote(v)}" for k, v in bench_env.items())
-            bench_script = str(node.node["bench_script"])
-            bench_prefix = str(node.node.get("bench_prefix", "")).strip()
-            py_cmd = f"{shlex.quote(node.node['python'])} {shlex.quote(bench_script)}"
-            if bench_prefix:
-                run_cmd = f"{bench_prefix} env {env_inline} {py_cmd}"
-            else:
-                run_cmd = f"export {env_inline}; {py_cmd}"
-            proc = node.run_in_workdir(run_cmd, check=True)
-            with open(os.path.join(local_node_out, "runner.stdout.log"), "w", encoding="utf-8") as f:
-                f.write(proc.stdout or "")
-            with open(os.path.join(local_node_out, "runner.stderr.log"), "w", encoding="utf-8") as f:
-                f.write(proc.stderr or "")
-
-            # Pull all outputs.
-            pulled_out = os.path.join(local_node_out, "bench_out")
-            node.pull_dir(remote_out, pulled_out)
-
-            # Parse summary.
-            bench_json_path = os.path.join(pulled_out, "bench_result.json")
-            if not os.path.exists(bench_json_path):
-                raise RuntimeError(f"missing bench_result.json for node {node.name}")
-            bench_json = read_json(bench_json_path)
-            node_rec["summary"] = summarize_node_bench(bench_json)
-            node_rec["platform_meta"] = collect_platform_meta(node)
-            node_rec["status"] = "ok"
-        except Exception as e:
-            node_rec["status"] = "failed"
-            node_rec["error"] = str(e)
-        finally:
-            # Always attempt to remove netem and optionally remote output.
-            try:
-                netem_clear(node)
-            except Exception:
-                pass
-            if not args.keep_remote_out:
-                try:
-                    node.run_in_workdir(f"rm -rf {shlex.quote(remote_out)}", check=False)
-                except Exception:
-                    pass
-            node_rec["finished_at"] = utc_now()
+    run_nodes: List[Dict[str, Any]] = [{} for _ in nodes_cfg]
+    if parallel_enabled:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futures = [
+                ex.submit(
+                    run_one_node,
+                    raw_node,
+                    index=i,
+                    out_root=out_root,
+                    tag=tag,
+                    keep_remote_out=args.keep_remote_out,
+                    start_at_epoch=start_at_epoch,
+                )
+                for i, raw_node in enumerate(nodes_cfg)
+            ]
+            for fut in concurrent.futures.as_completed(futures):
+                idx, rec = fut.result()
+                run_nodes[idx] = rec
+    else:
+        for i, raw_node in enumerate(nodes_cfg):
+            _, rec = run_one_node(
+                raw_node,
+                index=i,
+                out_root=out_root,
+                tag=tag,
+                keep_remote_out=args.keep_remote_out,
+                start_at_epoch=None,
+            )
+            run_nodes[i] = rec
 
     summary = {
         "tag": tag,
         "generated_at": utc_now(),
         "config_path": os.path.abspath(args.config),
+        "parallel": parallel_enabled,
+        "max_workers": max_workers if parallel_enabled else 1,
+        "start_sync_delay_s": start_sync_delay_s if parallel_enabled else 0.0,
+        "scheduled_start_at_epoch": start_at_epoch,
         "nodes": run_nodes,
     }
     summary_json = os.path.join(out_root, "l1_summary.json")
