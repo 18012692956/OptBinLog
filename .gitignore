@@ -9,11 +9,27 @@
 /demo/*.bin
 /demo/bench/
 /demo/bench_multi/
+/demo/bench_platform/
 /demo/init_race/
 /demo/multi/
+/demo/results/
+/demo/roundtrip/
+
+# Generated scripts cache
+/demo/__pycache__/
+/demo/.mplconfig/
 
 # Python venv
 /demo/.venv/
+
+# Additional local binaries
+/demo/optbinlog_roundtrip
+/demo/optbinlog_bench_linux
+/demo/optbinlog_bench_macos
+/demo/optbinlog_multi_bench_linux
+/demo/optbinlog_multi_bench_macos
+/demo/optbinlog_init_race_linux
+/demo/optbinlog_init_race_macos
 
 # macOS
 .DS_Store

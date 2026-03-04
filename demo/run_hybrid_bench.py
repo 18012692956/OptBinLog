@@ -504,6 +504,17 @@ def build_linux_binary():
     run(["limactl", "shell", LINUX_INSTANCE, "--", "bash", "-lc", script], cwd=PROJECT)
 
 
+def ensure_linux_trace_marker_access():
+    script = (
+        "set -e; "
+        f"if sudo test -e {json.dumps(TRACE_MARKER)}; then "
+        f"  sudo chgrp sky {json.dumps(TRACE_MARKER)} || true; "
+        f"  sudo chmod g+w {json.dumps(TRACE_MARKER)} || true; "
+        "fi"
+    )
+    run(["limactl", "shell", LINUX_INSTANCE, "--", "bash", "-lc", script], cwd=PROJECT)
+
+
 def run_local(modes):
     env = os.environ.copy()
     env["OPTBINLOG_BENCH_MODES"] = ",".join(modes)
@@ -533,7 +544,7 @@ def run_linux(modes):
             linux_env[k] = os.environ[k]
 
     exports = " ".join([f"{k}={json.dumps(v)}" for k, v in linux_env.items()])
-    script = "set -euo pipefail; " + f"cd {json.dumps(ROOT)}; " + f"export {exports}; " + "sudo -E python3 run_bench.py"
+    script = "set -euo pipefail; " + f"cd {json.dumps(ROOT)}; " + f"export {exports}; " + "python3 run_bench.py"
     run(["limactl", "shell", LINUX_INSTANCE, "--", "bash", "-lc", script], cwd=PROJECT)
 
 
@@ -548,6 +559,7 @@ def main():
     build_local_binary()
     run_local(local_modes)
     build_linux_binary()
+    ensure_linux_trace_marker_access()
     run_linux(linux_modes)
 
     local_json = os.path.join(LOCAL_OUT, "bench_result.json")

@@ -7,7 +7,7 @@ import time
 
 ROOT = os.path.dirname(__file__)
 EVENTLOG_DIR = os.path.join(ROOT, "eventlogst")
-OUT_DIR = os.path.join(ROOT, "init_race")
+OUT_DIR = os.environ.get("OPTBINLOG_INIT_OUT_DIR", os.path.join(ROOT, "init_race"))
 RUN_DIR = os.path.join(OUT_DIR, "runs")
 SHARED = os.path.join(OUT_DIR, "shared_eventtag.bin")
 PROCS = int(os.environ.get("OPTBINLOG_INIT_PROCS", "10"))
@@ -17,7 +17,7 @@ IQR_MULT = float(os.environ.get("OPTBINLOG_INIT_IQR_MULT", "1.5"))
 CMD_RETRIES = int(os.environ.get("OPTBINLOG_INIT_CMD_RETRIES", "5"))
 
 os.makedirs(RUN_DIR, exist_ok=True)
-race = os.path.join(ROOT, "optbinlog_init_race")
+race = os.environ.get("OPTBINLOG_INIT_BIN", os.path.join(ROOT, "optbinlog_init_race"))
 
 
 def percentile(values, p):
@@ -102,16 +102,22 @@ def iqr_filter(rows, field):
 
 def parse_trace(trace_path):
     records = []
-    with open(trace_path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
+    with open(trace_path, "rb") as f:
+        for raw in f:
+            line = raw.decode("utf-8", errors="ignore").replace("\x00", "").strip()
             if not line:
                 continue
             parts = line.split(" ", 2)
             if len(parts) < 3:
                 continue
-            ts_ns = int(parts[0])
-            pid = int(parts[1].split("=")[1])
+            try:
+                ts_ns = int(parts[0])
+            except ValueError:
+                continue
+            try:
+                pid = int(parts[1].split("=")[1])
+            except (ValueError, IndexError):
+                continue
             evt = parts[2]
             records.append({"ts_ns": ts_ns, "pid": pid, "event": evt})
     records.sort(key=lambda x: (x["pid"], x["ts_ns"]))
