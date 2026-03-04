@@ -6,7 +6,7 @@ import subprocess
 
 ROOT = os.path.dirname(__file__)
 EVENTLOG_DIR = os.path.join(ROOT, "eventlogst")
-OUT_DIR = os.path.join(ROOT, "bench")
+OUT_DIR = os.environ.get("OPTBINLOG_BENCH_OUT_DIR", os.path.join(ROOT, "bench"))
 RUN_DIR = os.path.join(OUT_DIR, "runs")
 SHARED = os.path.join(OUT_DIR, "shared_eventtag.bin")
 RECORDS = int(os.environ.get("OPTBINLOG_BENCH_RECORDS", "20000"))
@@ -18,7 +18,7 @@ MODES_ENV = os.environ.get("OPTBINLOG_BENCH_MODES", "text,binary,syslog,ftrace")
 BASELINE_MODE = os.environ.get("OPTBINLOG_BENCH_BASELINE", "text")
 
 os.makedirs(RUN_DIR, exist_ok=True)
-bench = os.path.join(ROOT, "optbinlog_bench")
+bench = os.environ.get("OPTBINLOG_BENCH_BIN", os.path.join(ROOT, "optbinlog_bench"))
 
 
 def parse_modes(raw):

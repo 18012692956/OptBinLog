@@ -1,15 +1,18 @@
 #include "optbinlog_shared.h"
 #include "optbinlog_eventlog.h"
 
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <errno.h>
-#include <sys/stat.h>
+#include <sys/file.h>
 #include <sys/mman.h>
-#include <fcntl.h>
-#include <unistd.h>
+#include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 _Static_assert(sizeof(OptbinlogBitmap) == (OPTBINLOG_EVENT_TAG_ARRAY_LEN / 8 + 1), "Bitmap size mismatch");
 _Static_assert(sizeof(OptbinlogEventTagEle) == 33, "EventTagEle size mismatch");
@@ -35,6 +38,85 @@ static void trace_event(const char* event) {
         (void)write(fd, buf, (size_t)len);
     }
     close(fd);
+}
+
+static uint64_t monotonic_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000ull + (uint64_t)ts.tv_nsec / 1000000ull;
+}
+
+static uint64_t realtime_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+static int getenv_int(const char* name, int default_value, int min_value, int max_value) {
+    const char* raw = getenv(name);
+    if (!raw || !raw[0]) return default_value;
+    char* end = NULL;
+    long v = strtol(raw, &end, 10);
+    if (end == raw || *end != '\0') return default_value;
+    if (v < min_value) v = min_value;
+    if (v > max_value) v = max_value;
+    return (int)v;
+}
+
+static char* make_lock_path(const char* shared_path) {
+    size_t n = strlen(shared_path) + 6;
+    char* lock_path = malloc(n);
+    if (!lock_path) return NULL;
+    snprintf(lock_path, n, "%s.lock", shared_path);
+    return lock_path;
+}
+
+static int acquire_init_lock(const char* shared_path, int* lock_fd, uint32_t* wait_loops, uint32_t* wait_ms) {
+    int timeout_ms = getenv_int("OPTBINLOG_INIT_LOCK_TIMEOUT_MS", 5000, 100, 120000);
+    int sleep_us = getenv_int("OPTBINLOG_INIT_LOCK_SLEEP_US", 10000, 100, 1000000);
+
+    char* lock_path = make_lock_path(shared_path);
+    if (!lock_path) return -1;
+
+    int fd = open(lock_path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+    free(lock_path);
+    if (fd < 0) return -1;
+
+    uint64_t start_ms = monotonic_ms();
+    uint32_t loops = 0;
+    for (;;) {
+        if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
+            uint64_t elapsed = monotonic_ms() - start_ms;
+            if (wait_loops) *wait_loops = loops;
+            if (wait_ms) *wait_ms = (uint32_t)elapsed;
+            *lock_fd = fd;
+            return 0;
+        }
+        if (errno == EINTR) {
+            continue;
+        }
+        if (errno != EWOULDBLOCK && errno != EAGAIN) {
+            close(fd);
+            return -1;
+        }
+        uint64_t elapsed = monotonic_ms() - start_ms;
+        if ((int)elapsed >= timeout_ms) {
+            trace_event("init_lock_timeout");
+            close(fd);
+            errno = ETIMEDOUT;
+            return -1;
+        }
+        trace_event("wait_initializing");
+        usleep((useconds_t)sleep_us);
+        loops++;
+    }
+}
+
+static void release_init_lock(int* lock_fd) {
+    if (!lock_fd || *lock_fd < 0) return;
+    (void)flock(*lock_fd, LOCK_UN);
+    close(*lock_fd);
+    *lock_fd = -1;
 }
 
 static void* optbinlog_malloc(size_t size) {
@@ -73,6 +155,27 @@ static int type_code_from_char(char c) {
     if (c == 'L') return 1;
     if (c == 'D') return 2;
     if (c == 'S') return 3;
+    return 0;
+}
+
+static int range_within(size_t offset, size_t len, size_t total) {
+    if (offset > total) return -1;
+    if (len > total - offset) return -1;
+    return 0;
+}
+
+static int header_layout_valid(const OptbinlogSharedTag* hdr, size_t map_size) {
+    if (hdr->header_version != OPTBINLOG_SHARED_HEADER_VERSION) return -1;
+    if (hdr->num_arrays == 0 || hdr->num_arrays > 1000000u) return -1;
+    if (hdr->total_size != 0 && hdr->total_size != (uint32_t)map_size) return -1;
+    if (hdr->bitmap_offset < (int)sizeof(OptbinlogSharedTag)) return -1;
+    if (hdr->eventtag_offset < (int)sizeof(OptbinlogSharedTag)) return -1;
+
+    size_t bitmap_offset = (size_t)hdr->bitmap_offset;
+    size_t bitmap_bytes = (size_t)hdr->num_arrays * sizeof(OptbinlogBitmap);
+    if (range_within(bitmap_offset, bitmap_bytes, map_size) != 0) return -1;
+    if ((size_t)hdr->eventtag_offset < bitmap_offset + bitmap_bytes) return -1;
+    if ((size_t)hdr->eventtag_offset >= map_size) return -1;
     return 0;
 }
 
@@ -126,35 +229,46 @@ int optbinlog_shared_set_strict_perm(int strict_perm) {
     return 0;
 }
 
-static int open_existing_shared(const char* shared_path, void** base, size_t* size, OptbinlogSharedTag** header) {
+static int open_existing_shared_internal(const char* shared_path,
+                                         uint32_t expected_schema_hash,
+                                         int require_schema_hash,
+                                         void** base,
+                                         size_t* size,
+                                         OptbinlogSharedTag** header) {
     int fd = open(shared_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
     if (fd < 0) return -1;
+
     struct stat st;
     if (validate_shared_file(fd, shared_path, &st) != 0) {
         close(fd);
         return -1;
     }
+
     void* addr = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_SHARED, fd, 0);
     if (addr == MAP_FAILED) {
         close(fd);
         return -1;
     }
+
     OptbinlogSharedTag* hdr = (OptbinlogSharedTag*)addr;
-    if (memcmp(hdr->magic, OPTBINLOG_SHARED_MAGIC, 8) != 0) {
+    if (memcmp(hdr->magic, OPTBINLOG_SHARED_MAGIC, 8) != 0 ||
+        hdr->state != OPTBINLOG_INITIALIZED ||
+        header_layout_valid(hdr, (size_t)st.st_size) != 0 ||
+        (require_schema_hash && hdr->schema_hash != expected_schema_hash)) {
         munmap(addr, (size_t)st.st_size);
         close(fd);
         return -1;
     }
-    if (hdr->state != OPTBINLOG_INITIALIZED) {
-        munmap(addr, (size_t)st.st_size);
-        close(fd);
-        return -1;
-    }
+
     close(fd);
     *base = addr;
     *size = (size_t)st.st_size;
     *header = hdr;
     return 0;
+}
+
+static int open_existing_shared(const char* shared_path, void** base, size_t* size, OptbinlogSharedTag** header) {
+    return open_existing_shared_internal(shared_path, 0, 0, base, size, header);
 }
 
 int optbinlog_shared_open(const char* shared_path, void** base, size_t* size, OptbinlogSharedTag** header) {
@@ -167,46 +281,51 @@ void optbinlog_shared_close(void* base, size_t size) {
     }
 }
 
+static int tag_cmp(const void* a, const void* b) {
+    const OptbinlogTagDef* ta = (const OptbinlogTagDef*)a;
+    const OptbinlogTagDef* tb = (const OptbinlogTagDef*)b;
+    if (ta->tag_id < tb->tag_id) return -1;
+    if (ta->tag_id > tb->tag_id) return 1;
+    return strncmp(ta->name, tb->name, sizeof(ta->name));
+}
+
+static uint32_t fnv1a_update(uint32_t h, const void* data, size_t len) {
+    const uint8_t* p = (const uint8_t*)data;
+    for (size_t i = 0; i < len; i++) {
+        h ^= p[i];
+        h *= 16777619u;
+    }
+    return h;
+}
+
+static uint32_t schema_hash_compute(const OptbinlogTagList* tags) {
+    uint32_t h = 2166136261u;
+    if (!tags || tags->len == 0) return h;
+
+    OptbinlogTagDef* ordered = calloc(tags->len, sizeof(OptbinlogTagDef));
+    if (!ordered) return h;
+    memcpy(ordered, tags->items, tags->len * sizeof(OptbinlogTagDef));
+    qsort(ordered, tags->len, sizeof(OptbinlogTagDef), tag_cmp);
+
+    for (size_t i = 0; i < tags->len; i++) {
+        const OptbinlogTagDef* t = &ordered[i];
+        h = fnv1a_update(h, &t->tag_id, sizeof(t->tag_id));
+        h = fnv1a_update(h, t->name, strnlen(t->name, sizeof(t->name)));
+        h = fnv1a_update(h, &t->ele_num, sizeof(t->ele_num));
+        for (int e = 0; e < t->ele_num; e++) {
+            h = fnv1a_update(h, t->eles[e].name, strnlen(t->eles[e].name, sizeof(t->eles[e].name)));
+            h = fnv1a_update(h, &t->eles[e].type_char, sizeof(t->eles[e].type_char));
+            h = fnv1a_update(h, &t->eles[e].bits, sizeof(t->eles[e].bits));
+        }
+    }
+
+    free(ordered);
+    return h;
+}
+
 int optbinlog_shared_init_from_dir(const char* eventlog_dir, const char* shared_path, int strict_perm) {
     optbinlog_shared_set_strict_perm(strict_perm);
     trace_event("init_start");
-    if (access(shared_path, F_OK) == 0) {
-        trace_event("shared_exists");
-        int tries = 0;
-        do {
-            int fd = open(shared_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-            if (fd < 0) break;
-            struct stat st;
-            if (validate_shared_file(fd, shared_path, &st) != 0) {
-                close(fd);
-                break;
-            }
-            size_t size = (size_t)st.st_size;
-            void* addr = mmap(NULL, size, PROT_READ, MAP_SHARED, fd, 0);
-            if (addr == MAP_FAILED) {
-                close(fd);
-                break;
-            }
-            OptbinlogSharedTag* hdr = (OptbinlogSharedTag*)addr;
-            if (memcmp(hdr->magic, OPTBINLOG_SHARED_MAGIC, 8) != 0) {
-                munmap(addr, size);
-                close(fd);
-                break;
-            }
-            if (hdr->state == OPTBINLOG_INITIALIZING) {
-                trace_event("wait_initializing");
-                munmap(addr, size);
-                close(fd);
-                usleep(10000);
-                tries++;
-                continue;
-            }
-            munmap(addr, size);
-            close(fd);
-            trace_event("open_existing_ok");
-            return 0;
-        } while (tries < 3);
-    }
 
     OptbinlogTagList tags;
     optbinlog_taglist_init(&tags);
@@ -219,6 +338,8 @@ int optbinlog_shared_init_from_dir(const char* eventlog_dir, const char* shared_
         fprintf(stderr, "no tags found in %s\n", eventlog_dir);
         return -1;
     }
+
+    uint32_t schema_hash = schema_hash_compute(&tags);
 
     int max_id = tags.items[0].tag_id;
     for (size_t i = 1; i < tags.len; i++) {
@@ -250,56 +371,53 @@ int optbinlog_shared_init_from_dir(const char* eventlog_dir, const char* shared_
     for (int i = 0; i < num_arrays; i++) total_eventtags += array_max[i];
 
     size_t total_size = sharedmem_size_get(num_arrays, total_eles, total_eventtags);
-
-    int fd = -1;
-    trace_event("create_attempt");
-    void* base = map_file(shared_path, total_size, 1, &fd);
-    if (!base) {
-        if (errno == EEXIST) {
-            trace_event("create_eexist");
-            int tries = 0;
-            do {
-                int fd2 = open(shared_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-                if (fd2 < 0) break;
-                struct stat st;
-                if (validate_shared_file(fd2, shared_path, &st) != 0) {
-                    close(fd2);
-                    break;
-                }
-                size_t size = (size_t)st.st_size;
-                void* addr = mmap(NULL, size, PROT_READ, MAP_SHARED, fd2, 0);
-                if (addr == MAP_FAILED) {
-                    close(fd2);
-                    break;
-                }
-                OptbinlogSharedTag* hdr = (OptbinlogSharedTag*)addr;
-                if (memcmp(hdr->magic, OPTBINLOG_SHARED_MAGIC, 8) != 0) {
-                    munmap(addr, size);
-                    close(fd2);
-                    break;
-                }
-                if (hdr->state == OPTBINLOG_INITIALIZING) {
-                    trace_event("wait_initializing");
-                    munmap(addr, size);
-                    close(fd2);
-                    usleep(10000);
-                    tries++;
-                    continue;
-                }
-                munmap(addr, size);
-                close(fd2);
-                trace_event("open_existing_ok");
-                optbinlog_taglist_free(&tags);
-                free(bitmap);
-                free(array_max);
-                return 0;
-            } while (tries < 3);
-        }
-        fprintf(stderr, "create shared file failed: %s\n", strerror(errno));
+    if (total_size > UINT32_MAX) {
+        fprintf(stderr, "shared layout too large\n");
         optbinlog_taglist_free(&tags);
         free(bitmap);
         free(array_max);
         return -1;
+    }
+
+    int lock_fd = -1;
+    uint32_t wait_loops = 0;
+    uint32_t wait_ms = 0;
+    if (acquire_init_lock(shared_path, &lock_fd, &wait_loops, &wait_ms) != 0) {
+        fprintf(stderr, "acquire shared lock failed: %s\n", strerror(errno));
+        optbinlog_taglist_free(&tags);
+        free(bitmap);
+        free(array_max);
+        return -1;
+    }
+
+    int rc = -1;
+    int fd = -1;
+    void* base = NULL;
+
+    void* existing_base = NULL;
+    size_t existing_size = 0;
+    OptbinlogSharedTag* existing_header = NULL;
+    if (open_existing_shared_internal(shared_path, schema_hash, 1, &existing_base, &existing_size, &existing_header) == 0) {
+        (void)existing_header;
+        optbinlog_shared_close(existing_base, existing_size);
+        trace_event("open_existing_ok");
+        rc = 0;
+        goto out;
+    }
+
+    if (access(shared_path, F_OK) == 0) {
+        trace_event("shared_mismatch_recreate");
+        if (unlink(shared_path) != 0 && errno != ENOENT) {
+            fprintf(stderr, "remove stale shared failed: %s\n", strerror(errno));
+            goto out;
+        }
+    }
+
+    trace_event("create_attempt");
+    base = map_file(shared_path, total_size, 1, &fd);
+    if (!base) {
+        fprintf(stderr, "create shared file failed: %s\n", strerror(errno));
+        goto out;
     }
 
     trace_event("create_success");
@@ -311,43 +429,33 @@ int optbinlog_shared_init_from_dir(const char* eventlog_dir, const char* shared_
 
     OptbinlogSharedTag* header = (OptbinlogSharedTag*)optbinlog_malloc(sizeof(OptbinlogSharedTag));
     if (!header) {
-        munmap(base, total_size);
-        close(fd);
-        free(bitmap);
-        free(array_max);
-        optbinlog_taglist_free(&tags);
-        return -1;
+        goto fail_cleanup_created;
     }
 
     header->state = OPTBINLOG_INITIALIZING;
     memcpy(header->magic, OPTBINLOG_SHARED_MAGIC, 8);
+    header->header_version = OPTBINLOG_SHARED_HEADER_VERSION;
     header->num_arrays = (unsigned int)num_arrays;
+    header->schema_hash = schema_hash;
+    header->generation = realtime_ns();
+    header->total_size = (uint32_t)total_size;
+    header->init_wait_loops = wait_loops;
+    header->init_wait_ms = wait_ms;
 
     OptbinlogBitmap* bitmap_out = (OptbinlogBitmap*)optbinlog_malloc((size_t)num_arrays * sizeof(OptbinlogBitmap));
     if (!bitmap_out) {
-        munmap(base, total_size);
-        close(fd);
-        free(bitmap);
-        free(array_max);
-        optbinlog_taglist_free(&tags);
-        return -1;
+        goto fail_cleanup_created;
     }
     header->bitmap_offset = (int)((uint8_t*)bitmap_out - (uint8_t*)base);
     memcpy(bitmap_out, bitmap, (size_t)num_arrays * sizeof(OptbinlogBitmap));
 
     OptbinlogEventTag* eventtag_out = (OptbinlogEventTag*)optbinlog_malloc((size_t)total_eventtags * sizeof(OptbinlogEventTag));
     if (!eventtag_out) {
-        munmap(base, total_size);
-        close(fd);
-        free(bitmap);
-        free(array_max);
-        optbinlog_taglist_free(&tags);
-        return -1;
+        goto fail_cleanup_created;
     }
     header->eventtag_offset = (int)((uint8_t*)eventtag_out - (uint8_t*)base);
 
     int ele_cursor = OPTBINLOG_MALLOC_OFFSET;
-
     for (int arr = 0; arr < num_arrays; arr++) {
         int arr_base_index = 0;
         for (int i = 0; i < arr; i++) arr_base_index += array_max[i];
@@ -360,11 +468,13 @@ int optbinlog_shared_init_from_dir(const char* eventlog_dir, const char* shared_
                     break;
                 }
             }
+
             OptbinlogEventTag* out = &eventtag_out[arr_base_index + idx];
             if (!found) {
                 memset(out, 0, sizeof(OptbinlogEventTag));
                 continue;
             }
+
             out->tag_index = (unsigned int)found->tag_id;
             out->tag_ele_num = (unsigned int)found->ele_num;
             out->tag_ele_offset = ele_cursor;
@@ -383,16 +493,39 @@ int optbinlog_shared_init_from_dir(const char* eventlog_dir, const char* shared_
     }
 
     header->state = OPTBINLOG_INITIALIZED;
-    msync(base, total_size, MS_SYNC);
-    munmap(base, total_size);
-    close(fd);
-    trace_event("init_done");
+    if (msync(base, total_size, MS_SYNC) != 0) {
+        fprintf(stderr, "msync shared failed: %s\n", strerror(errno));
+        goto fail_cleanup_created;
+    }
 
+    rc = 0;
+    trace_event("init_done");
+    goto out;
+
+fail_cleanup_created:
+    if (base) {
+        munmap(base, total_size);
+        base = NULL;
+    }
+    if (fd >= 0) {
+        close(fd);
+        fd = -1;
+    }
+    (void)unlink(shared_path);
+    goto out;
+
+out:
+    if (base) {
+        munmap(base, total_size);
+    }
+    if (fd >= 0) {
+        close(fd);
+    }
+    release_init_lock(&lock_fd);
     free(bitmap);
     free(array_max);
     optbinlog_taglist_free(&tags);
-
-    return 0;
+    return rc;
 }
 
 OptbinlogEventTag* optbinlog_lookup_tag(void* base, OptbinlogSharedTag* header, int tag_id, int icnt) {

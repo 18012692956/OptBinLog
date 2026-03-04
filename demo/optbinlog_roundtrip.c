@@ -78,7 +78,8 @@ static int copy_file(const char* src, const char* dst) {
 static int mutate_first_tag_id(const char* path) {
     FILE* fp = fopen(path, "r+b");
     if (!fp) return -1;
-    if (fseek(fp, 8, SEEK_SET) != 0) {
+    /* Frame format: [len:4][ts:8][tag_id:2][ele_count:1]... */
+    if (fseek(fp, 12, SEEK_SET) != 0) {
         fclose(fp);
         return -1;
     }
@@ -352,5 +353,5 @@ int main(int argc, char** argv) {
     free_expected(exp, rec_count);
     optbinlog_taglist_free(&tags);
 
-    return (roundtrip_ok && bad_tag_detected) ? 0 : 1;
+    return (roundtrip_ok && bad_tag_detected && truncated_detected) ? 0 : 1;
 }

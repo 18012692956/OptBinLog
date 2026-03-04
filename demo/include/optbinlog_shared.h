@@ -7,6 +7,7 @@
 #define OPTBINLOG_EVENT_TAG_ARRAY_LEN 100
 #define OPTBINLOG_EVENTTAG_FILENAME "/tmp/__eventtagdata__"
 #define OPTBINLOG_SHARED_MAGIC "OptLog77"
+#define OPTBINLOG_SHARED_HEADER_VERSION 2u
 
 typedef enum {
     OPTBINLOG_INITIALIZING = 0,
@@ -38,10 +39,16 @@ typedef struct {
 /* Shared header */
 typedef struct {
     char magic[8];
+    uint32_t header_version;
     OptbinlogSharedTagState state;
     unsigned int num_arrays;
     int bitmap_offset;
     int eventtag_offset;
+    uint32_t schema_hash;
+    uint64_t generation;
+    uint32_t total_size;
+    uint32_t init_wait_loops;
+    uint32_t init_wait_ms;
 } OptbinlogSharedTag;
 
 int optbinlog_shared_init_from_dir(const char* eventlog_dir, const char* shared_path, int strict_perm);

@@ -1,23 +1,61 @@
 #include "optbinlog_binlog.h"
 #include "optbinlog_shared.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <errno.h>
 #include <time.h>
+
+#define OPTBINLOG_MIN_PAYLOAD_LEN 11u
+#define OPTBINLOG_MAX_PAYLOAD_LEN (1024u * 1024u)
 
 typedef struct {
     OptbinlogEventTag* tag;
     OptbinlogEventTagEle* eles;
     int ele_count;
-    int record_size;
+    int payload_size;
 } OptbinlogTagCacheEntry;
 
 static uint64_t now_ns(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+static uint32_t crc32_update(uint32_t crc, uint8_t b) {
+    crc ^= b;
+    for (int i = 0; i < 8; i++) {
+        uint32_t mask = (uint32_t)(-(int32_t)(crc & 1u));
+        crc = (crc >> 1) ^ (0xEDB88320u & mask);
+    }
+    return crc;
+}
+
+static uint32_t crc32_compute(const uint8_t* data, size_t len) {
+    uint32_t crc = 0xFFFFFFFFu;
+    for (size_t i = 0; i < len; i++) {
+        crc = crc32_update(crc, data[i]);
+    }
+    return ~crc;
+}
+
+static void write_le32(uint8_t* dst, uint32_t v) {
+    dst[0] = (uint8_t)(v & 0xFFu);
+    dst[1] = (uint8_t)((v >> 8) & 0xFFu);
+    dst[2] = (uint8_t)((v >> 16) & 0xFFu);
+    dst[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
+
+static uint16_t read_le16(const uint8_t* src) {
+    return (uint16_t)((uint16_t)src[0] | ((uint16_t)src[1] << 8));
+}
+
+static uint32_t read_le32(const uint8_t* src) {
+    return (uint32_t)src[0] |
+           ((uint32_t)src[1] << 8) |
+           ((uint32_t)src[2] << 16) |
+           ((uint32_t)src[3] << 24);
 }
 
 static int build_tag_cache(void* base, OptbinlogSharedTag* header, OptbinlogTagCacheEntry** out_cache, int* out_len) {
@@ -46,7 +84,7 @@ static int build_tag_cache(void* base, OptbinlogSharedTag* header, OptbinlogTagC
             cache[tag_id].tag = tag;
             cache[tag_id].eles = eles;
             cache[tag_id].ele_count = (int)tag->tag_ele_num;
-            cache[tag_id].record_size = size;
+            cache[tag_id].payload_size = size;
         }
         prefix += arr_max;
     }
@@ -62,6 +100,11 @@ static uint64_t read_uint_n(const uint8_t* data, int nbytes) {
         v |= ((uint64_t)data[i]) << (i * 8);
     }
     return v;
+}
+
+static int read_exact(FILE* fp, void* out, size_t n) {
+    size_t got = fread(out, 1, n, fp);
+    return got == n ? 0 : -1;
 }
 
 int optbinlog_binlog_write(const char* shared_path, const char* log_path, const OptbinlogRecord* records, size_t count) {
@@ -99,6 +142,9 @@ int optbinlog_binlog_write(const char* shared_path, const char* log_path, const 
 
     const size_t buf_cap = 256 * 1024;
     uint8_t* buf = malloc(buf_cap);
+    uint8_t* rec_buf = NULL;
+    size_t rec_cap = 0;
+    size_t buf_used = 0;
     if (!buf) {
         fprintf(stderr, "OOM\n");
         fclose(fp);
@@ -106,26 +152,11 @@ int optbinlog_binlog_write(const char* shared_path, const char* log_path, const 
         optbinlog_shared_close(base, map_size);
         return -1;
     }
-    size_t buf_used = 0;
-    uint8_t* rec_buf = NULL;
-    size_t rec_cap = 0;
 
     for (size_t i = 0; i < count; i++) {
         const OptbinlogRecord* rec = &records[i];
         if (rec->tag_id < 0 || rec->tag_id >= cache_len || !cache[rec->tag_id].tag) {
             fprintf(stderr, "invalid tag %d\n", rec->tag_id);
-            buf_used = 0;
-            free(buf);
-            free(rec_buf);
-            fclose(fp);
-            free(cache);
-            optbinlog_shared_close(base, map_size);
-            return -1;
-        }
-        OptbinlogTagCacheEntry* entry = &cache[rec->tag_id];
-        if (rec->ele_count != entry->ele_count) {
-            fprintf(stderr, "element count mismatch for tag %d\n", rec->tag_id);
-            buf_used = 0;
             free(buf);
             free(rec_buf);
             fclose(fp);
@@ -134,12 +165,31 @@ int optbinlog_binlog_write(const char* shared_path, const char* log_path, const 
             return -1;
         }
 
-        uint16_t tag_id_u16 = (uint16_t)rec->tag_id;
-        uint8_t ele_count = (uint8_t)rec->ele_count;
-        int record_size = entry->record_size;
+        OptbinlogTagCacheEntry* entry = &cache[rec->tag_id];
+        if (rec->ele_count != entry->ele_count) {
+            fprintf(stderr, "element count mismatch for tag %d\n", rec->tag_id);
+            free(buf);
+            free(rec_buf);
+            fclose(fp);
+            free(cache);
+            optbinlog_shared_close(base, map_size);
+            return -1;
+        }
+        if (rec->tag_id > 0xFFFF || rec->ele_count > 0xFF) {
+            fprintf(stderr, "record field overflow for tag %d\n", rec->tag_id);
+            free(buf);
+            free(rec_buf);
+            fclose(fp);
+            free(cache);
+            optbinlog_shared_close(base, map_size);
+            return -1;
+        }
+
+        int payload_size = entry->payload_size;
+        size_t frame_size = sizeof(uint32_t) + (size_t)payload_size + sizeof(uint32_t);
         uint8_t* dst = NULL;
-        if (record_size <= (int)buf_cap) {
-            if (buf_used + (size_t)record_size > buf_cap) {
+        if (frame_size <= buf_cap) {
+            if (buf_used + frame_size > buf_cap) {
                 uint64_t t4 = profile ? now_ns() : 0;
                 fwrite(buf, 1, buf_used, fp);
                 if (profile) t_write += now_ns() - t4;
@@ -147,9 +197,8 @@ int optbinlog_binlog_write(const char* shared_path, const char* log_path, const 
             }
             dst = buf + buf_used;
         } else {
-            if (rec_cap < (size_t)record_size) {
-                size_t new_cap = (size_t)record_size;
-                uint8_t* next = realloc(rec_buf, new_cap);
+            if (rec_cap < frame_size) {
+                uint8_t* next = realloc(rec_buf, frame_size);
                 if (!next) {
                     fprintf(stderr, "OOM\n");
                     free(buf);
@@ -160,17 +209,22 @@ int optbinlog_binlog_write(const char* shared_path, const char* log_path, const 
                     return -1;
                 }
                 rec_buf = next;
-                rec_cap = new_cap;
+                rec_cap = frame_size;
             }
             dst = rec_buf;
         }
+
         uint64_t t1 = profile ? now_ns() : 0;
-        size_t off = 0;
+        write_le32(dst, (uint32_t)payload_size);
+        size_t off = sizeof(uint32_t);
         memcpy(dst + off, &rec->timestamp, sizeof(int64_t));
         off += sizeof(int64_t);
+
+        uint16_t tag_id_u16 = (uint16_t)rec->tag_id;
+        uint8_t ele_count_u8 = (uint8_t)rec->ele_count;
         memcpy(dst + off, &tag_id_u16, sizeof(uint16_t));
         off += sizeof(uint16_t);
-        memcpy(dst + off, &ele_count, sizeof(uint8_t));
+        memcpy(dst + off, &ele_count_u8, sizeof(uint8_t));
         off += sizeof(uint8_t);
 
         OptbinlogEventTagEle* eles = entry->eles;
@@ -180,22 +234,22 @@ int optbinlog_binlog_write(const char* shared_path, const char* log_path, const 
             if (ele->type == 1) {
                 if (v->kind != OPTBINLOG_VAL_U) {
                     fprintf(stderr, "type mismatch for tag %d\n", rec->tag_id);
-                    free(rec_buf);
                     free(buf);
+                    free(rec_buf);
                     fclose(fp);
                     free(cache);
                     optbinlog_shared_close(base, map_size);
                     return -1;
                 }
                 for (int b = 0; b < (int)ele->len; b++) {
-                    dst[off + b] = (uint8_t)((v->u >> (b * 8)) & 0xFF);
+                    dst[off + (size_t)b] = (uint8_t)((v->u >> (b * 8)) & 0xFFu);
                 }
                 off += (size_t)ele->len;
             } else if (ele->type == 2) {
                 if (v->kind != OPTBINLOG_VAL_D) {
                     fprintf(stderr, "type mismatch for tag %d\n", rec->tag_id);
-                    free(rec_buf);
                     free(buf);
+                    free(rec_buf);
                     fclose(fp);
                     free(cache);
                     optbinlog_shared_close(base, map_size);
@@ -216,20 +270,34 @@ int optbinlog_binlog_write(const char* shared_path, const char* log_path, const 
                 memset(dst + off, 0, (size_t)ele->len);
                 if (v->s) {
                     size_t slen = strnlen(v->s, (size_t)ele->len);
-                    if (slen > (size_t)ele->len) slen = (size_t)ele->len;
                     memcpy(dst + off, v->s, slen);
                 }
                 off += (size_t)ele->len;
             }
         }
+
+        if (off != sizeof(uint32_t) + (size_t)payload_size) {
+            fprintf(stderr, "internal payload size mismatch\n");
+            free(buf);
+            free(rec_buf);
+            fclose(fp);
+            free(cache);
+            optbinlog_shared_close(base, map_size);
+            return -1;
+        }
+
+        uint32_t crc = crc32_compute(dst + sizeof(uint32_t), (size_t)payload_size);
+        write_le32(dst + off, crc);
+        off += sizeof(uint32_t);
+
         if (profile) t_pack += now_ns() - t1;
 
-        if (record_size > (int)buf_cap) {
+        if (frame_size > buf_cap) {
             uint64_t t3 = profile ? now_ns() : 0;
-            fwrite(dst, 1, (size_t)record_size, fp);
+            fwrite(dst, 1, frame_size, fp);
             if (profile) t_write += now_ns() - t3;
         } else {
-            buf_used += (size_t)record_size;
+            buf_used += frame_size;
         }
     }
 
@@ -270,68 +338,141 @@ int optbinlog_binlog_read(const char* shared_path, const char* log_path, Optbinl
         return -1;
     }
 
-    while (1) {
-        OptbinlogRecord rec;
-        uint16_t tag_id;
-        uint8_t ele_count;
-        if (fread(&rec.timestamp, sizeof(int64_t), 1, fp) != 1) break;
-        if (fread(&tag_id, sizeof(uint16_t), 1, fp) != 1) break;
-        if (fread(&ele_count, sizeof(uint8_t), 1, fp) != 1) break;
+    uint8_t* payload = NULL;
+    size_t payload_cap = 0;
+    int rc = 0;
 
-        rec.tag_id = (int)tag_id;
-        rec.ele_count = (int)ele_count;
+    for (;;) {
+        uint8_t len_buf[4];
+        size_t n = fread(len_buf, 1, sizeof(len_buf), fp);
+        if (n == 0) {
+            if (feof(fp)) break;
+            fprintf(stderr, "read frame length failed\n");
+            rc = -1;
+            break;
+        }
+        if (n != sizeof(len_buf)) {
+            fprintf(stderr, "truncated frame length\n");
+            rc = -1;
+            break;
+        }
+
+        uint32_t payload_len = read_le32(len_buf);
+        if (payload_len < OPTBINLOG_MIN_PAYLOAD_LEN || payload_len > OPTBINLOG_MAX_PAYLOAD_LEN) {
+            fprintf(stderr, "invalid frame length %u\n", payload_len);
+            rc = -1;
+            break;
+        }
+
+        if (payload_cap < (size_t)payload_len) {
+            uint8_t* next = realloc(payload, (size_t)payload_len);
+            if (!next) {
+                fprintf(stderr, "OOM\n");
+                rc = -1;
+                break;
+            }
+            payload = next;
+            payload_cap = (size_t)payload_len;
+        }
+
+        if (read_exact(fp, payload, (size_t)payload_len) != 0) {
+            fprintf(stderr, "truncated payload\n");
+            rc = -1;
+            break;
+        }
+
+        uint8_t crc_buf[4];
+        if (read_exact(fp, crc_buf, sizeof(crc_buf)) != 0) {
+            fprintf(stderr, "truncated crc\n");
+            rc = -1;
+            break;
+        }
+
+        uint32_t expect_crc = read_le32(crc_buf);
+        uint32_t got_crc = crc32_compute(payload, (size_t)payload_len);
+        if (expect_crc != got_crc) {
+            fprintf(stderr, "crc mismatch\n");
+            rc = -1;
+            break;
+        }
+
+        size_t off = 0;
+        if ((size_t)payload_len - off < sizeof(int64_t) + sizeof(uint16_t) + sizeof(uint8_t)) {
+            fprintf(stderr, "payload too short\n");
+            rc = -1;
+            break;
+        }
+
+        OptbinlogRecord rec;
+        memcpy(&rec.timestamp, payload + off, sizeof(int64_t));
+        off += sizeof(int64_t);
+        rec.tag_id = (int)read_le16(payload + off);
+        off += sizeof(uint16_t);
+        rec.ele_count = (int)payload[off];
+        off += sizeof(uint8_t);
 
         OptbinlogEventTag* tag = optbinlog_lookup_tag(base, header, rec.tag_id, rec.ele_count);
         if (!tag) {
-            fprintf(stderr, "invalid record tag %u\n", (unsigned)tag_id);
-            fclose(fp);
-            optbinlog_shared_close(base, map_size);
-            return -1;
+            fprintf(stderr, "invalid record tag %d\n", rec.tag_id);
+            rc = -1;
+            break;
         }
 
         OptbinlogValue* values = calloc((size_t)rec.ele_count, sizeof(OptbinlogValue));
         if (!values) {
             fprintf(stderr, "OOM\n");
-            fclose(fp);
-            optbinlog_shared_close(base, map_size);
-            return -1;
+            rc = -1;
+            break;
         }
         rec.values = values;
 
+        int row_rc = 0;
         OptbinlogEventTagEle* eles = (OptbinlogEventTagEle*)((uint8_t*)base + tag->tag_ele_offset);
         for (int e = 0; e < rec.ele_count; e++) {
             OptbinlogEventTagEle* ele = &eles[e];
+            size_t need = (ele->type == 2) ? sizeof(double) : (size_t)ele->len;
+            if ((size_t)payload_len - off < need) {
+                fprintf(stderr, "truncated record body\n");
+                row_rc = -1;
+                break;
+            }
+
             if (ele->type == 1) {
-                uint8_t buf[8] = {0};
-                fread(buf, 1, ele->len, fp);
                 values[e].kind = OPTBINLOG_VAL_U;
-                values[e].u = read_uint_n(buf, ele->len);
+                values[e].u = read_uint_n(payload + off, ele->len);
+                off += (size_t)ele->len;
             } else if (ele->type == 2) {
-                double v;
-                fread(&v, sizeof(double), 1, fp);
+                double v = 0.0;
+                memcpy(&v, payload + off, sizeof(double));
                 values[e].kind = OPTBINLOG_VAL_D;
                 values[e].d = v;
+                off += sizeof(double);
             } else if (ele->type == 3) {
-                char* buf = calloc((size_t)ele->len + 1, 1);
-                if (!buf) {
+                char* s = calloc((size_t)ele->len + 1, 1);
+                if (!s) {
                     fprintf(stderr, "OOM\n");
-                    fclose(fp);
-                    optbinlog_shared_close(base, map_size);
-                    return -1;
+                    row_rc = -1;
+                    break;
                 }
-                fread(buf, 1, ele->len, fp);
+                memcpy(s, payload + off, (size_t)ele->len);
                 values[e].kind = OPTBINLOG_VAL_S;
-                values[e].s = buf;
+                values[e].s = s;
+                off += (size_t)ele->len;
+            } else {
+                fprintf(stderr, "unknown element type\n");
+                row_rc = -1;
+                break;
             }
         }
 
-        if (cb) {
+        if (row_rc == 0 && off != (size_t)payload_len) {
+            fprintf(stderr, "payload trailing bytes\n");
+            row_rc = -1;
+        }
+
+        if (row_rc == 0 && cb) {
             if (cb(&rec, user) != 0) {
-                for (int e = 0; e < rec.ele_count; e++) {
-                    if (values[e].kind == OPTBINLOG_VAL_S) free((void*)values[e].s);
-                }
-                free(values);
-                break;
+                row_rc = 1;
             }
         }
 
@@ -339,9 +480,18 @@ int optbinlog_binlog_read(const char* shared_path, const char* log_path, Optbinl
             if (values[e].kind == OPTBINLOG_VAL_S) free((void*)values[e].s);
         }
         free(values);
+
+        if (row_rc < 0) {
+            rc = -1;
+            break;
+        }
+        if (row_rc > 0) {
+            break;
+        }
     }
 
+    free(payload);
     fclose(fp);
     optbinlog_shared_close(base, map_size);
-    return 0;
+    return rc;
 }

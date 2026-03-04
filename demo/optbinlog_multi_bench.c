@@ -66,6 +66,123 @@ static int appendf(char** p, size_t* left, const char* fmt, ...) {
     return 0;
 }
 
+static int format_plain_text_payload(long i, int device_id, uint64_t* rnd, char* out, size_t cap) {
+    uint64_t seq = xorshift64(rnd);
+    uint64_t code = xorshift64(rnd) % 100000ULL;
+    double temp = (double)(xorshift64(rnd) % 8000ULL) / 100.0;
+    const char* lvl = (seq % 10ULL == 0ULL) ? "W" : "I";
+    return snprintf(
+               out,
+               cap,
+               "ts=%lld lvl=%s module=multi dev=dev-%02d seq=%llu code=%llu temp=%.2f msg=\"plain text log\"",
+               (long long)(1710000000 + i),
+               lvl,
+               device_id,
+               (unsigned long long)seq,
+               (unsigned long long)code,
+               temp) < (int)cap
+               ? 0
+               : -1;
+}
+
+typedef struct {
+    char** items;
+    size_t len;
+    size_t cap;
+} SyslogLineList;
+
+static void syslog_line_list_init(SyslogLineList* list) {
+    list->items = NULL;
+    list->len = 0;
+    list->cap = 0;
+}
+
+static void syslog_line_list_free(SyslogLineList* list) {
+    if (!list) return;
+    for (size_t i = 0; i < list->len; i++) {
+        free(list->items[i]);
+    }
+    free(list->items);
+    list->items = NULL;
+    list->len = 0;
+    list->cap = 0;
+}
+
+static int syslog_line_list_push(SyslogLineList* list, const char* line) {
+    if (list->len == list->cap) {
+        size_t next_cap = list->cap ? list->cap * 2 : 16;
+        char** next = realloc(list->items, next_cap * sizeof(char*));
+        if (!next) return -1;
+        list->items = next;
+        list->cap = next_cap;
+    }
+    list->items[list->len] = strdup(line);
+    if (!list->items[list->len]) return -1;
+    list->len++;
+    return 0;
+}
+
+static char* trim_ascii(char* s) {
+    while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n') s++;
+    char* end = s + strlen(s);
+    while (end > s && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' || end[-1] == '\n')) {
+        end--;
+    }
+    *end = '\0';
+    return s;
+}
+
+static int load_syslog_lines_from_file(const char* path, SyslogLineList* out) {
+    FILE* fp = fopen(path, "rb");
+    if (!fp) return -1;
+    char line[1024];
+    int rc = 0;
+    while (fgets(line, sizeof(line), fp)) {
+        char* s = trim_ascii(line);
+        if (!s[0] || s[0] == '#') continue;
+        if (syslog_line_list_push(out, s) != 0) {
+            rc = -1;
+            break;
+        }
+    }
+    fclose(fp);
+    return rc;
+}
+
+static int load_syslog_lines(const char* eventlog_dir, SyslogLineList* out) {
+    static const char* fallback[] = {
+        "kernel: thermal throttling event cleared on cpu0",
+        "sshd[2421]: Accepted password for ops from 10.10.8.12 port 52240 ssh2",
+        "systemd[1]: Started Session 42 of user service.",
+        "cron[841]: (root) CMD (run-parts /etc/cron.hourly)",
+        "nginx[1392]: 10.1.2.3 - - \"GET /healthz HTTP/1.1\" 200 2",
+        "dockerd[553]: container 6f9c4f2d restarting due to healthcheck failure",
+    };
+
+    syslog_line_list_init(out);
+    const char* source = getenv("OPTBINLOG_SYSLOG_SOURCE");
+    if (!source || !source[0]) {
+        size_t n = strlen(eventlog_dir) + strlen("/syslog_messages.log") + 1;
+        char* local = malloc(n);
+        if (!local) return -1;
+        snprintf(local, n, "%s/syslog_messages.log", eventlog_dir);
+        int rc = load_syslog_lines_from_file(local, out);
+        free(local);
+        if (rc == 0 && out->len > 0) return 0;
+    } else {
+        int rc = load_syslog_lines_from_file(source, out);
+        if (rc == 0 && out->len > 0) return 0;
+    }
+
+    for (size_t i = 0; i < sizeof(fallback) / sizeof(fallback[0]); i++) {
+        if (syslog_line_list_push(out, fallback[i]) != 0) {
+            syslog_line_list_free(out);
+            return -1;
+        }
+    }
+    return 0;
+}
+
 static int format_text_payload(const OptbinlogTagDef* tag, long i, int device_id, uint64_t* rnd, char* out, size_t cap) {
     char* p = out;
     size_t left = cap;
@@ -104,28 +221,20 @@ static int write_counter_file(const char* out_dir, int device_id, unsigned long 
 }
 
 static int write_text_logs(const char* eventlog_dir, const char* out_dir, int device_id, long records) {
-    OptbinlogTagList tags;
-    optbinlog_taglist_init(&tags);
-    if (optbinlog_parse_eventlog_dir(eventlog_dir, &tags) != 0 || tags.len == 0) {
-        optbinlog_taglist_free(&tags);
-        return -1;
-    }
+    (void)eventlog_dir;
 
     char path[512];
     snprintf(path, sizeof(path), "%s/device_%02d.txt", out_dir, device_id);
     FILE* fp = fopen(path, "wb");
     if (!fp) {
-        optbinlog_taglist_free(&tags);
         return -1;
     }
 
     uint64_t rnd = 0x123456789abcdef0ULL ^ (uint64_t)device_id;
     for (long i = 0; i < records; i++) {
-        OptbinlogTagDef* tag = &tags.items[i % tags.len];
         char line[1024];
-        if (format_text_payload(tag, i, device_id, &rnd, line, sizeof(line)) != 0) {
+        if (format_plain_text_payload(i, device_id, &rnd, line, sizeof(line)) != 0) {
             fclose(fp);
-            optbinlog_taglist_free(&tags);
             return -1;
         }
         fputs(line, fp);
@@ -133,7 +242,6 @@ static int write_text_logs(const char* eventlog_dir, const char* out_dir, int de
     }
 
     fclose(fp);
-    optbinlog_taglist_free(&tags);
     return 0;
 }
 
@@ -204,10 +312,8 @@ static int write_binary_logs(const char* eventlog_dir, const char* shared_path, 
 }
 
 static int write_syslog_logs(const char* eventlog_dir, const char* out_dir, int device_id, long records) {
-    OptbinlogTagList tags;
-    optbinlog_taglist_init(&tags);
-    if (optbinlog_parse_eventlog_dir(eventlog_dir, &tags) != 0 || tags.len == 0) {
-        optbinlog_taglist_free(&tags);
+    SyslogLineList lines;
+    if (load_syslog_lines(eventlog_dir, &lines) != 0 || lines.len == 0) {
         return -1;
     }
 
@@ -216,31 +322,22 @@ static int write_syslog_logs(const char* eventlog_dir, const char* out_dir, int 
     if (prio_env && prio_env[0]) prio = atoi(prio_env);
 
     openlog("optbinlog_multi_bench", LOG_NDELAY | LOG_PID, LOG_USER);
-    uint64_t rnd = 0x123456789abcdef0ULL ^ (uint64_t)device_id;
     unsigned long long bytes = 0;
 
     for (long i = 0; i < records; i++) {
-        OptbinlogTagDef* tag = &tags.items[i % tags.len];
-        char line[1024];
-        if (format_text_payload(tag, i, device_id, &rnd, line, sizeof(line)) != 0) {
-            closelog();
-            optbinlog_taglist_free(&tags);
-            return -1;
-        }
+        const char* line = lines.items[(size_t)(i % (long)lines.len)];
         syslog(prio, "%s", line);
         bytes += (unsigned long long)strlen(line) + 1ULL;
     }
 
     closelog();
-    optbinlog_taglist_free(&tags);
+    syslog_line_list_free(&lines);
     return write_counter_file(out_dir, device_id, bytes);
 }
 
 static int write_ftrace_logs(const char* eventlog_dir, const char* out_dir, int device_id, long records) {
-    OptbinlogTagList tags;
-    optbinlog_taglist_init(&tags);
-    if (optbinlog_parse_eventlog_dir(eventlog_dir, &tags) != 0 || tags.len == 0) {
-        optbinlog_taglist_free(&tags);
+    SyslogLineList lines;
+    if (load_syslog_lines(eventlog_dir, &lines) != 0 || lines.len == 0) {
         return -1;
     }
 
@@ -251,31 +348,25 @@ static int write_ftrace_logs(const char* eventlog_dir, const char* out_dir, int 
 
     int fd = open(trace_path, O_WRONLY | O_CLOEXEC);
     if (fd < 0) {
-        optbinlog_taglist_free(&tags);
+        syslog_line_list_free(&lines);
         return -1;
     }
 
-    uint64_t rnd = 0x123456789abcdef0ULL ^ (uint64_t)device_id;
+    (void)device_id;
     unsigned long long bytes = 0;
     for (long i = 0; i < records; i++) {
-        OptbinlogTagDef* tag = &tags.items[i % tags.len];
-        char line[1024];
-        if (format_text_payload(tag, i, device_id, &rnd, line, sizeof(line)) != 0) {
-            close(fd);
-            optbinlog_taglist_free(&tags);
-            return -1;
-        }
+        const char* line = lines.items[(size_t)(i % (long)lines.len)];
         size_t len = strlen(line);
         if (write(fd, line, len) != (ssize_t)len || write(fd, "\n", 1) != 1) {
             close(fd);
-            optbinlog_taglist_free(&tags);
+            syslog_line_list_free(&lines);
             return -1;
         }
         bytes += (unsigned long long)len + 1ULL;
     }
 
     close(fd);
-    optbinlog_taglist_free(&tags);
+    syslog_line_list_free(&lines);
     return write_counter_file(out_dir, device_id, bytes);
 }
 

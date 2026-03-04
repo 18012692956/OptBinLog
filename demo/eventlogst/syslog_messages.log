@@ -1,0 +1,21 @@
+# Raw syslog messages used by benchmark syslog mode.
+kernel: cpu0 entered C-state residency update
+systemd[1]: Started Session 104 of user service.
+sshd[4212]: Accepted publickey for deploy from 10.23.4.8 port 51302 ssh2
+nginx[2291]: 10.1.3.44 - - "GET /api/v1/health HTTP/1.1" 200 2
+nginx[2291]: 10.1.3.44 - - "POST /api/v1/report HTTP/1.1" 202 0
+chronyd[631]: Selected source 172.16.8.10
+dbus-daemon[567]: [system] Activated service name='org.freedesktop.timedate1'
+containerd[799]: task exited id=web-7f4d4 status=0
+dockerd[612]: health check passed for container 7f4d4c2b9d11
+kernel: audit: type=1100 msg=audit(1710000011.230:153): pid=1432 uid=0 auid=4294967295
+sudo[4411]:     ops : TTY=pts/2 ; PWD=/srv/app ; USER=root ; COMMAND=/usr/bin/systemctl reload nginx
+CRON[954]: (root) CMD (run-parts /etc/cron.hourly)
+NetworkManager[522]: <info>  [1710000022.1889] device (eth0): state change: activated -> deactivating
+kernel: EXT4-fs (nvme0n1p2): re-mounted. Opts: errors=remount-ro
+redis-server[1701]: 11234:M 04 Mar 2026 12:02:14.119 * DB saved on disk
+postfix/smtpd[5112]: connect from mx1.example.net[203.0.113.11]
+postfix/smtpd[5112]: disconnect from mx1.example.net[203.0.113.11] ehlo=1 starttls=1 mail=1 rcpt=1 data=1 quit=1 commands=6
+haproxy[901]: Server backend/api1 is DOWN, reason: Layer7 timeout, check duration: 2000ms
+haproxy[901]: Server backend/api1 is UP, reason: Layer7 check passed, check duration: 39ms
+kernel: thermal thermal_zone0: failed to read out temp
