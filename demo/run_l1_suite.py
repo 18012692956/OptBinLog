@@ -195,6 +195,7 @@ def build_bench_env(node: NodeExecutor, remote_out: str) -> Dict[str, str]:
     env = {
         "OPTBINLOG_BENCH_OUT_DIR": remote_out,
         "OPTBINLOG_BENCH_BIN": cfg["bench_bin"],
+        "OPTBINLOG_EVENTLOG_DIR": str(cfg.get("eventlog_dir", "eventlogst")),
         "OPTBINLOG_BENCH_RECORDS": str(cfg["records"]),
         "OPTBINLOG_BENCH_REPEATS": str(cfg["repeats"]),
         "OPTBINLOG_BENCH_WARMUP": str(cfg["warmup"]),
@@ -208,6 +209,8 @@ def build_bench_env(node: NodeExecutor, remote_out: str) -> Dict[str, str]:
         env["OPTBINLOG_TRACE_MARKER"] = str(cfg["trace_marker"])
     if cfg.get("syslog_source"):
         env["OPTBINLOG_SYSLOG_SOURCE"] = str(cfg["syslog_source"])
+    if cfg.get("text_profile"):
+        env["OPTBINLOG_TEXT_PROFILE"] = str(cfg["text_profile"])
     return env
 
 

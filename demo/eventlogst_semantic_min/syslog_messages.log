@@ -1,0 +1,7 @@
+# semantic-aligned lightweight log lines
+level=I seq=1001 code=1021 temp=22.1 tag=3001
+level=W seq=1002 code=1022 temp=22.2 tag=3002
+level=I seq=1003 code=1023 temp=22.3 tag=3003
+level=I seq=1004 code=1024 temp=22.4 tag=3004
+level=W seq=1005 code=1025 temp=22.5 tag=3005
+level=I seq=1006 code=1026 temp=22.6 tag=3006

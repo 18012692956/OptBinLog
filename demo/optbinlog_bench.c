@@ -32,10 +32,20 @@ typedef struct {
     uint16_t level;
 } NanoPackedRecord;
 
+typedef struct {
+    uint32_t sec;
+    uint32_t nsec;
+    uint16_t domain;
+    uint16_t tag;
+    uint8_t level;
+    uint8_t reserved;
+    uint16_t msg_len;
+} HiLogLiteHeader;
+
 static void usage(const char* prog) {
     fprintf(stderr,
         "Usage:\n"
-        "  %s --mode text|csv|jsonl|binary|syslog|ftrace|nanolog_like|zephyr_deferred_like|nanolog_semantic_like|zephyr_deferred_semantic_like --eventlog-dir <dir> --out <file> --records N [--shared <file>] [--strict-perm]\n",
+        "  %s --mode text|csv|jsonl|binary|syslog|ftrace|nanolog_like|zephyr_like|zephyr_deferred_like|ulog_async_like|hilog_lite_like|nanolog_semantic_like|zephyr_deferred_semantic_like --eventlog-dir <dir> --out <file> --records N [--shared <file>] [--strict-perm]\n",
         prog
     );
 }
@@ -156,6 +166,21 @@ static int format_plain_text_payload(long i, uint64_t* rnd, char* out, size_t ca
     uint64_t code = xorshift64(rnd) % 100000ULL;
     double temp = (double)(xorshift64(rnd) % 8000ULL) / 100.0;
     const char* lvl = (seq % 10ULL == 0ULL) ? "W" : "I";
+    const char* profile = getenv("OPTBINLOG_TEXT_PROFILE");
+    int semantic = profile && strcmp(profile, "semantic") == 0;
+    if (semantic) {
+        return snprintf(
+                   out,
+                   cap,
+                   "ts=%lld level=%s seq=%llu code=%llu temp=%.2f",
+                   (long long)(1710000000 + i),
+                   lvl,
+                   (unsigned long long)seq,
+                   (unsigned long long)code,
+                   temp) < (int)cap
+                   ? 0
+                   : -1;
+    }
     return snprintf(
                out,
                cap,
@@ -713,6 +738,126 @@ static int bench_zephyr_deferred_like(const char* out_path, long records) {
     return 0;
 }
 
+static int bench_ulog_async_like(const char* out_path, long records) {
+    uint64_t t_e2e0 = now_ns();
+    FILE* fp = fopen(out_path, "wb");
+    if (!fp) {
+        fprintf(stderr, "open %s failed: %s\n", out_path, strerror(errno));
+        return -1;
+    }
+    setvbuf(fp, NULL, _IOFBF, 1 << 20);
+
+    enum { BATCH_CAP = 512 };
+    char batch[BATCH_CAP][192];
+    size_t batch_len[BATCH_CAP];
+    size_t nb = 0;
+    uint64_t bytes = 0;
+    uint64_t rnd = 0x123456789abcdef0ULL;
+
+    uint64_t t_write0 = now_ns();
+    for (long i = 0; i < records; i++) {
+        NanoPackedRecord r = make_nano_record(i, &rnd);
+        int n = snprintf(batch[nb],
+                         sizeof(batch[nb]),
+                         "I/%u(%u): seq=%u code=%u temp=%d.%d ts=%llu\n",
+                         (unsigned)r.tag,
+                         (unsigned)r.level,
+                         (unsigned)r.seq,
+                         (unsigned)r.code,
+                         (int)(r.temp_x10 / 10),
+                         (int)abs(r.temp_x10 % 10),
+                         (unsigned long long)r.ts_ns);
+        if (n < 0 || (size_t)n >= sizeof(batch[nb])) {
+            fclose(fp);
+            return -1;
+        }
+        batch_len[nb++] = (size_t)n;
+        if (nb == BATCH_CAP) {
+            for (size_t j = 0; j < nb; j++) {
+                if (fwrite(batch[j], 1, batch_len[j], fp) != batch_len[j]) {
+                    fclose(fp);
+                    return -1;
+                }
+                bytes += (uint64_t)batch_len[j];
+            }
+            nb = 0;
+        }
+    }
+    for (size_t j = 0; j < nb; j++) {
+        if (fwrite(batch[j], 1, batch_len[j], fp) != batch_len[j]) {
+            fclose(fp);
+            return -1;
+        }
+        bytes += (uint64_t)batch_len[j];
+    }
+    fflush(fp);
+    uint64_t t_write1 = now_ns();
+
+    fclose(fp);
+    uint64_t t_e2e1 = now_ns();
+
+    long rss = max_rss_kb();
+    double write_ms = (double)(t_write1 - t_write0) / 1e6;
+    double end_to_end_ms = (double)(t_e2e1 - t_e2e0) / 1e6;
+    double prep_ms = (double)(t_write0 - t_e2e0) / 1e6;
+    double post_ms = (double)(t_e2e1 - t_write1) / 1e6;
+    printf("mode,ulog_async_like,records,%ld,elapsed_ms,%.3f,write_only_ms,%.3f,end_to_end_ms,%.3f,prep_ms,%.3f,post_ms,%.3f,bytes,%llu,shared_bytes,0,total_bytes,%llu,peak_kb,%ld\n",
+           records, write_ms, write_ms, end_to_end_ms, prep_ms, post_ms,
+           (unsigned long long)bytes, (unsigned long long)bytes, rss);
+    return 0;
+}
+
+static int bench_hilog_lite_like(const char* out_path, long records) {
+    uint64_t t_e2e0 = now_ns();
+    FILE* fp = fopen(out_path, "wb");
+    if (!fp) {
+        fprintf(stderr, "open %s failed: %s\n", out_path, strerror(errno));
+        return -1;
+    }
+    setvbuf(fp, NULL, _IOFBF, 1 << 20);
+
+    uint64_t bytes = 0;
+    uint64_t rnd = 0x123456789abcdef0ULL;
+    uint64_t t_write0 = now_ns();
+    for (long i = 0; i < records; i++) {
+        NanoPackedRecord r = make_nano_record(i, &rnd);
+        char msg[64];
+        int n = snprintf(msg, sizeof(msg), "c=%u s=%u t=%d", r.code, r.seq, r.temp_x10);
+        if (n <= 0 || (size_t)n > sizeof(msg)) {
+            fclose(fp);
+            return -1;
+        }
+        HiLogLiteHeader h;
+        h.sec = (uint32_t)(r.ts_ns / 1000000000ull);
+        h.nsec = (uint32_t)(r.ts_ns % 1000000000ull);
+        h.domain = 0xD001u;
+        h.tag = r.tag;
+        h.level = (uint8_t)(r.level & 0x7u);
+        h.reserved = 0u;
+        h.msg_len = (uint16_t)n;
+        if (fwrite(&h, sizeof(h), 1, fp) != 1 || fwrite(msg, 1, (size_t)n, fp) != (size_t)n) {
+            fclose(fp);
+            return -1;
+        }
+        bytes += (uint64_t)sizeof(h) + (uint64_t)n;
+    }
+    fflush(fp);
+    uint64_t t_write1 = now_ns();
+
+    fclose(fp);
+    uint64_t t_e2e1 = now_ns();
+
+    long rss = max_rss_kb();
+    double write_ms = (double)(t_write1 - t_write0) / 1e6;
+    double end_to_end_ms = (double)(t_e2e1 - t_e2e0) / 1e6;
+    double prep_ms = (double)(t_write0 - t_e2e0) / 1e6;
+    double post_ms = (double)(t_e2e1 - t_write1) / 1e6;
+    printf("mode,hilog_lite_like,records,%ld,elapsed_ms,%.3f,write_only_ms,%.3f,end_to_end_ms,%.3f,prep_ms,%.3f,post_ms,%.3f,bytes,%llu,shared_bytes,0,total_bytes,%llu,peak_kb,%ld\n",
+           records, write_ms, write_ms, end_to_end_ms, prep_ms, post_ms,
+           (unsigned long long)bytes, (unsigned long long)bytes, rss);
+    return 0;
+}
+
 static int bench_nanolog_semantic_like(const char* out_path, long records) {
     uint64_t t_e2e0 = now_ns();
     FILE* fp = fopen(out_path, "wb");
@@ -962,9 +1107,17 @@ int main(int argc, char** argv) {
         if (!out_path) { usage(argv[0]); return 1; }
         return bench_nanolog_like(out_path, records) == 0 ? 0 : 1;
     }
-    if (strcmp(mode, "zephyr_deferred_like") == 0) {
+    if (strcmp(mode, "zephyr_deferred_like") == 0 || strcmp(mode, "zephyr_like") == 0) {
         if (!out_path) { usage(argv[0]); return 1; }
         return bench_zephyr_deferred_like(out_path, records) == 0 ? 0 : 1;
+    }
+    if (strcmp(mode, "ulog_async_like") == 0) {
+        if (!out_path) { usage(argv[0]); return 1; }
+        return bench_ulog_async_like(out_path, records) == 0 ? 0 : 1;
+    }
+    if (strcmp(mode, "hilog_lite_like") == 0) {
+        if (!out_path) { usage(argv[0]); return 1; }
+        return bench_hilog_lite_like(out_path, records) == 0 ? 0 : 1;
     }
     if (strcmp(mode, "nanolog_semantic_like") == 0) {
         if (!out_path) { usage(argv[0]); return 1; }

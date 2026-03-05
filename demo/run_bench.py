@@ -5,7 +5,7 @@ import statistics
 import subprocess
 
 ROOT = os.path.dirname(__file__)
-EVENTLOG_DIR = os.path.join(ROOT, "eventlogst")
+EVENTLOG_DIR = os.environ.get("OPTBINLOG_EVENTLOG_DIR", os.path.join(ROOT, "eventlogst"))
 OUT_DIR = os.environ.get("OPTBINLOG_BENCH_OUT_DIR", os.path.join(ROOT, "bench"))
 RUN_DIR = os.path.join(OUT_DIR, "runs")
 SHARED = os.path.join(OUT_DIR, "shared_eventtag.bin")
@@ -98,7 +98,10 @@ def run_once(mode, idx, warmup=False):
         "syslog": "syslog",
         "ftrace": "ftrace",
         "nanolog_like": "nlog",
+        "zephyr_like": "zlog",
         "zephyr_deferred_like": "zlog",
+        "ulog_async_like": "ulg",
+        "hilog_lite_like": "hlg",
         "nanolog_semantic_like": "nslog",
         "zephyr_deferred_semantic_like": "zslog",
     }
@@ -140,7 +143,8 @@ def run_once(mode, idx, warmup=False):
     throughput_e2e_rps = float(RECORDS) / (end_to_end_ms / 1000.0) if end_to_end_ms > 0 else 0.0
 
     return {
-        "mode": rec.get("mode", mode),
+        "mode": mode,
+        "mode_reported": rec.get("mode", mode),
         "iteration": idx,
         "elapsed_ms": write_only_ms,
         "write_only_ms": write_only_ms,

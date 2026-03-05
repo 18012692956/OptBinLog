@@ -20,8 +20,8 @@ LINUX_OUT = os.path.join(HYBRID_OUT, "linux")
 MERGED_JSON = os.path.join(HYBRID_OUT, "bench_multi_merged.json")
 DUAL_HEATMAP_SVG = os.path.join(HYBRID_OUT, "bench_multi_dual_relative.svg")
 
-LOCAL_MODES = os.environ.get("OPTBINLOG_HYBRID_MULTI_LOCAL_MODES", "text,binary,syslog,nanolog_like,zephyr_deferred_like")
-LINUX_MODES = os.environ.get("OPTBINLOG_HYBRID_MULTI_LINUX_MODES", "binary,ftrace,nanolog_like,zephyr_deferred_like")
+LOCAL_MODES = os.environ.get("OPTBINLOG_HYBRID_MULTI_LOCAL_MODES", "text,binary,syslog,nanolog_like,zephyr_deferred_like,ulog_async_like,hilog_lite_like")
+LINUX_MODES = os.environ.get("OPTBINLOG_HYBRID_MULTI_LINUX_MODES", "binary,ftrace,nanolog_like,zephyr_deferred_like,ulog_async_like,hilog_lite_like")
 LOCAL_BASELINE = os.environ.get("OPTBINLOG_MULTI_BASELINE", "text")
 LINUX_BASELINE = os.environ.get("OPTBINLOG_HYBRID_MULTI_LINUX_BASELINE", "binary")
 LINUX_INSTANCE = os.environ.get("OPTBINLOG_LINUX_INSTANCE", "thesis-linux")
@@ -206,6 +206,9 @@ def run_local(local_modes):
             "OPTBINLOG_MULTI_FILTER_FIELD",
             "OPTBINLOG_SCAN_DEVICES",
             "OPTBINLOG_SCAN_RECORDS_PER_DEVICE",
+            "OPTBINLOG_EVENTLOG_DIR",
+            "OPTBINLOG_TEXT_PROFILE",
+            "OPTBINLOG_SYSLOG_SOURCE",
         ],
     )
     run(["python3", RUN_MULTI], env=env, cwd=ROOT)
@@ -234,6 +237,9 @@ def run_linux(linux_modes):
             "OPTBINLOG_MULTI_FILTER_FIELD",
             "OPTBINLOG_SCAN_DEVICES",
             "OPTBINLOG_SCAN_RECORDS_PER_DEVICE",
+            "OPTBINLOG_EVENTLOG_DIR",
+            "OPTBINLOG_TEXT_PROFILE",
+            "OPTBINLOG_SYSLOG_SOURCE",
         ],
     )
     exports = " ".join([f"{k}={json.dumps(v)}" for k, v in linux_env.items()])

@@ -22,8 +22,8 @@ MERGED_RESULT_SVG = os.path.join(HYBRID_OUT, "bench_result_merged.svg")
 MERGED_STATS_SVG = os.path.join(HYBRID_OUT, "bench_stats_merged.svg")
 DUAL_RELATIVE_SVG = os.path.join(HYBRID_OUT, "bench_dual_relative.svg")
 
-LOCAL_MODES = os.environ.get("OPTBINLOG_HYBRID_LOCAL_MODES", "text,binary,syslog,nanolog_like,zephyr_deferred_like")
-LINUX_MODES = os.environ.get("OPTBINLOG_HYBRID_LINUX_MODES", "binary,ftrace,nanolog_like,zephyr_deferred_like")
+LOCAL_MODES = os.environ.get("OPTBINLOG_HYBRID_LOCAL_MODES", "text,binary,syslog,nanolog_like,zephyr_deferred_like,ulog_async_like,hilog_lite_like")
+LINUX_MODES = os.environ.get("OPTBINLOG_HYBRID_LINUX_MODES", "binary,ftrace,nanolog_like,zephyr_deferred_like,ulog_async_like,hilog_lite_like")
 BASELINE_MODE = os.environ.get("OPTBINLOG_BENCH_BASELINE", "text")
 LINUX_BASELINE_MODE = os.environ.get("OPTBINLOG_HYBRID_LINUX_BASELINE", "binary")
 FORCE_LOCAL_BASELINE = os.environ.get("OPTBINLOG_HYBRID_FORCE_LOCAL_BASELINE", "1") != "0"
@@ -523,6 +523,9 @@ def propagate_common_env(env):
         "OPTBINLOG_BENCH_IQR_MULT",
         "OPTBINLOG_BENCH_FILTER_FIELD",
         "OPTBINLOG_BENCH_BASELINE",
+        "OPTBINLOG_EVENTLOG_DIR",
+        "OPTBINLOG_TEXT_PROFILE",
+        "OPTBINLOG_SYSLOG_SOURCE",
     ]
     for k in keys:
         if k in os.environ:
@@ -632,6 +635,9 @@ def run_linux(modes):
         "OPTBINLOG_BENCH_WARMUP",
         "OPTBINLOG_BENCH_IQR_MULT",
         "OPTBINLOG_BENCH_FILTER_FIELD",
+        "OPTBINLOG_EVENTLOG_DIR",
+        "OPTBINLOG_TEXT_PROFILE",
+        "OPTBINLOG_SYSLOG_SOURCE",
     ]:
         if k in os.environ:
             linux_env[k] = os.environ[k]

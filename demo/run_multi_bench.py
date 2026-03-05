@@ -6,7 +6,7 @@ import statistics
 import subprocess
 
 ROOT = os.path.dirname(__file__)
-EVENTLOG_DIR = os.path.join(ROOT, "eventlogst")
+EVENTLOG_DIR = os.environ.get("OPTBINLOG_EVENTLOG_DIR", os.path.join(ROOT, "eventlogst"))
 OUT_DIR = os.environ.get("OPTBINLOG_MULTI_OUT_DIR", os.path.join(ROOT, "bench_multi"))
 RAW_DIR = os.path.join(OUT_DIR, "raw")
 
@@ -174,7 +174,8 @@ def run_once(mode, devices, records_per_device, run_idx, scenario_name, warmup=F
         "scenario": scenario_name,
         "devices": devices,
         "records_per_device": records_per_device,
-        "mode": row.get("mode", mode),
+        "mode": mode,
+        "mode_reported": row.get("mode", mode),
         "iteration": run_idx,
         "elapsed_ms": elapsed_ms,
         "bytes": int(row.get("bytes", 0)),

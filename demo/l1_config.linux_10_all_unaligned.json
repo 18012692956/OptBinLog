@@ -1,0 +1,308 @@
+{
+  "tag": "l1_linux_10_all_unaligned",
+  "parallel": true,
+  "max_workers": 10,
+  "start_sync_delay_s": 10,
+  "nodes": [
+    {
+      "name": "dev-01",
+      "transport": "prefix",
+      "prefix": [
+        "limactl",
+        "shell",
+        "thesis-dev-01",
+        "--"
+      ],
+      "workdir": "/home/sky.linux/optbinlog/demo",
+      "python": "python3",
+      "build_cmd": "gcc -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -Iinclude -o optbinlog_bench_linux '/Users/sky/Documents/graduation design/demo/optbinlog_bench.c' src/optbinlog_shared.c src/optbinlog_eventlog.c src/optbinlog_binlog.c && sudo -n sh -c 'for p in /sys/kernel/tracing/tracing_on /sys/kernel/debug/tracing/tracing_on; do if [ -w \"$p\" ]; then echo 1 > \"$p\"; exit 0; fi; done; exit 1'",
+      "bench_script": "run_bench.py",
+      "bench_bin": "/home/sky.linux/optbinlog/demo/optbinlog_bench_linux",
+      "eventlog_dir": "./eventlogst",
+      "records": 80000,
+      "repeats": 5,
+      "warmup": 1,
+      "modes": "text,binary,ftrace,nanolog_like,zephyr_like,ulog_async_like,hilog_lite_like",
+      "baseline": "text",
+      "trace_marker": "/sys/kernel/tracing/trace_marker",
+      "bench_prefix": "sudo -n",
+      "netem": {
+        "iface": "eth0",
+        "delay_ms": 15,
+        "jitter_ms": 4,
+        "loss_pct": 0.2,
+        "rate_mbit": 80
+      }
+    },
+    {
+      "name": "dev-02",
+      "transport": "prefix",
+      "prefix": [
+        "limactl",
+        "shell",
+        "thesis-dev-02",
+        "--"
+      ],
+      "workdir": "/home/sky.linux/optbinlog/demo",
+      "python": "python3",
+      "build_cmd": "gcc -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -Iinclude -o optbinlog_bench_linux '/Users/sky/Documents/graduation design/demo/optbinlog_bench.c' src/optbinlog_shared.c src/optbinlog_eventlog.c src/optbinlog_binlog.c && sudo -n sh -c 'for p in /sys/kernel/tracing/tracing_on /sys/kernel/debug/tracing/tracing_on; do if [ -w \"$p\" ]; then echo 1 > \"$p\"; exit 0; fi; done; exit 1'",
+      "bench_script": "run_bench.py",
+      "bench_bin": "/home/sky.linux/optbinlog/demo/optbinlog_bench_linux",
+      "eventlog_dir": "./eventlogst",
+      "records": 80000,
+      "repeats": 5,
+      "warmup": 1,
+      "modes": "text,binary,ftrace,nanolog_like,zephyr_like,ulog_async_like,hilog_lite_like",
+      "baseline": "text",
+      "trace_marker": "/sys/kernel/tracing/trace_marker",
+      "bench_prefix": "sudo -n",
+      "netem": {
+        "iface": "eth0",
+        "delay_ms": 15,
+        "jitter_ms": 4,
+        "loss_pct": 0.2,
+        "rate_mbit": 80
+      }
+    },
+    {
+      "name": "dev-03",
+      "transport": "prefix",
+      "prefix": [
+        "limactl",
+        "shell",
+        "thesis-dev-03",
+        "--"
+      ],
+      "workdir": "/home/sky.linux/optbinlog/demo",
+      "python": "python3",
+      "build_cmd": "gcc -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -Iinclude -o optbinlog_bench_linux '/Users/sky/Documents/graduation design/demo/optbinlog_bench.c' src/optbinlog_shared.c src/optbinlog_eventlog.c src/optbinlog_binlog.c && sudo -n sh -c 'for p in /sys/kernel/tracing/tracing_on /sys/kernel/debug/tracing/tracing_on; do if [ -w \"$p\" ]; then echo 1 > \"$p\"; exit 0; fi; done; exit 1'",
+      "bench_script": "run_bench.py",
+      "bench_bin": "/home/sky.linux/optbinlog/demo/optbinlog_bench_linux",
+      "eventlog_dir": "./eventlogst",
+      "records": 80000,
+      "repeats": 5,
+      "warmup": 1,
+      "modes": "text,binary,ftrace,nanolog_like,zephyr_like,ulog_async_like,hilog_lite_like",
+      "baseline": "text",
+      "trace_marker": "/sys/kernel/tracing/trace_marker",
+      "bench_prefix": "sudo -n",
+      "netem": {
+        "iface": "eth0",
+        "delay_ms": 15,
+        "jitter_ms": 4,
+        "loss_pct": 0.2,
+        "rate_mbit": 80
+      }
+    },
+    {
+      "name": "dev-04",
+      "transport": "prefix",
+      "prefix": [
+        "limactl",
+        "shell",
+        "thesis-dev-04",
+        "--"
+      ],
+      "workdir": "/home/sky.linux/optbinlog/demo",
+      "python": "python3",
+      "build_cmd": "gcc -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -Iinclude -o optbinlog_bench_linux '/Users/sky/Documents/graduation design/demo/optbinlog_bench.c' src/optbinlog_shared.c src/optbinlog_eventlog.c src/optbinlog_binlog.c && sudo -n sh -c 'for p in /sys/kernel/tracing/tracing_on /sys/kernel/debug/tracing/tracing_on; do if [ -w \"$p\" ]; then echo 1 > \"$p\"; exit 0; fi; done; exit 1'",
+      "bench_script": "run_bench.py",
+      "bench_bin": "/home/sky.linux/optbinlog/demo/optbinlog_bench_linux",
+      "eventlog_dir": "./eventlogst",
+      "records": 80000,
+      "repeats": 5,
+      "warmup": 1,
+      "modes": "text,binary,ftrace,nanolog_like,zephyr_like,ulog_async_like,hilog_lite_like",
+      "baseline": "text",
+      "trace_marker": "/sys/kernel/tracing/trace_marker",
+      "bench_prefix": "sudo -n",
+      "netem": {
+        "iface": "eth0",
+        "delay_ms": 15,
+        "jitter_ms": 4,
+        "loss_pct": 0.2,
+        "rate_mbit": 80
+      }
+    },
+    {
+      "name": "dev-05",
+      "transport": "prefix",
+      "prefix": [
+        "limactl",
+        "shell",
+        "thesis-dev-05",
+        "--"
+      ],
+      "workdir": "/home/sky.linux/optbinlog/demo",
+      "python": "python3",
+      "build_cmd": "gcc -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -Iinclude -o optbinlog_bench_linux '/Users/sky/Documents/graduation design/demo/optbinlog_bench.c' src/optbinlog_shared.c src/optbinlog_eventlog.c src/optbinlog_binlog.c && sudo -n sh -c 'for p in /sys/kernel/tracing/tracing_on /sys/kernel/debug/tracing/tracing_on; do if [ -w \"$p\" ]; then echo 1 > \"$p\"; exit 0; fi; done; exit 1'",
+      "bench_script": "run_bench.py",
+      "bench_bin": "/home/sky.linux/optbinlog/demo/optbinlog_bench_linux",
+      "eventlog_dir": "./eventlogst",
+      "records": 80000,
+      "repeats": 5,
+      "warmup": 1,
+      "modes": "text,binary,ftrace,nanolog_like,zephyr_like,ulog_async_like,hilog_lite_like",
+      "baseline": "text",
+      "trace_marker": "/sys/kernel/tracing/trace_marker",
+      "bench_prefix": "sudo -n",
+      "netem": {
+        "iface": "eth0",
+        "delay_ms": 15,
+        "jitter_ms": 4,
+        "loss_pct": 0.2,
+        "rate_mbit": 80
+      }
+    },
+    {
+      "name": "dev-06",
+      "transport": "prefix",
+      "prefix": [
+        "limactl",
+        "shell",
+        "thesis-dev-06",
+        "--"
+      ],
+      "workdir": "/home/sky.linux/optbinlog/demo",
+      "python": "python3",
+      "build_cmd": "gcc -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -Iinclude -o optbinlog_bench_linux '/Users/sky/Documents/graduation design/demo/optbinlog_bench.c' src/optbinlog_shared.c src/optbinlog_eventlog.c src/optbinlog_binlog.c && sudo -n sh -c 'for p in /sys/kernel/tracing/tracing_on /sys/kernel/debug/tracing/tracing_on; do if [ -w \"$p\" ]; then echo 1 > \"$p\"; exit 0; fi; done; exit 1'",
+      "bench_script": "run_bench.py",
+      "bench_bin": "/home/sky.linux/optbinlog/demo/optbinlog_bench_linux",
+      "eventlog_dir": "./eventlogst",
+      "records": 80000,
+      "repeats": 5,
+      "warmup": 1,
+      "modes": "text,binary,ftrace,nanolog_like,zephyr_like,ulog_async_like,hilog_lite_like",
+      "baseline": "text",
+      "trace_marker": "/sys/kernel/tracing/trace_marker",
+      "bench_prefix": "sudo -n",
+      "netem": {
+        "iface": "eth0",
+        "delay_ms": 15,
+        "jitter_ms": 4,
+        "loss_pct": 0.2,
+        "rate_mbit": 80
+      }
+    },
+    {
+      "name": "dev-07",
+      "transport": "prefix",
+      "prefix": [
+        "limactl",
+        "shell",
+        "thesis-dev-07",
+        "--"
+      ],
+      "workdir": "/home/sky.linux/optbinlog/demo",
+      "python": "python3",
+      "build_cmd": "gcc -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -Iinclude -o optbinlog_bench_linux '/Users/sky/Documents/graduation design/demo/optbinlog_bench.c' src/optbinlog_shared.c src/optbinlog_eventlog.c src/optbinlog_binlog.c && sudo -n sh -c 'for p in /sys/kernel/tracing/tracing_on /sys/kernel/debug/tracing/tracing_on; do if [ -w \"$p\" ]; then echo 1 > \"$p\"; exit 0; fi; done; exit 1'",
+      "bench_script": "run_bench.py",
+      "bench_bin": "/home/sky.linux/optbinlog/demo/optbinlog_bench_linux",
+      "eventlog_dir": "./eventlogst",
+      "records": 80000,
+      "repeats": 5,
+      "warmup": 1,
+      "modes": "text,binary,ftrace,nanolog_like,zephyr_like,ulog_async_like,hilog_lite_like",
+      "baseline": "text",
+      "trace_marker": "/sys/kernel/tracing/trace_marker",
+      "bench_prefix": "sudo -n",
+      "netem": {
+        "iface": "eth0",
+        "delay_ms": 15,
+        "jitter_ms": 4,
+        "loss_pct": 0.2,
+        "rate_mbit": 80
+      }
+    },
+    {
+      "name": "dev-08",
+      "transport": "prefix",
+      "prefix": [
+        "limactl",
+        "shell",
+        "thesis-dev-08",
+        "--"
+      ],
+      "workdir": "/home/sky.linux/optbinlog/demo",
+      "python": "python3",
+      "build_cmd": "gcc -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -Iinclude -o optbinlog_bench_linux '/Users/sky/Documents/graduation design/demo/optbinlog_bench.c' src/optbinlog_shared.c src/optbinlog_eventlog.c src/optbinlog_binlog.c && sudo -n sh -c 'for p in /sys/kernel/tracing/tracing_on /sys/kernel/debug/tracing/tracing_on; do if [ -w \"$p\" ]; then echo 1 > \"$p\"; exit 0; fi; done; exit 1'",
+      "bench_script": "run_bench.py",
+      "bench_bin": "/home/sky.linux/optbinlog/demo/optbinlog_bench_linux",
+      "eventlog_dir": "./eventlogst",
+      "records": 80000,
+      "repeats": 5,
+      "warmup": 1,
+      "modes": "text,binary,ftrace,nanolog_like,zephyr_like,ulog_async_like,hilog_lite_like",
+      "baseline": "text",
+      "trace_marker": "/sys/kernel/tracing/trace_marker",
+      "bench_prefix": "sudo -n",
+      "netem": {
+        "iface": "eth0",
+        "delay_ms": 15,
+        "jitter_ms": 4,
+        "loss_pct": 0.2,
+        "rate_mbit": 80
+      }
+    },
+    {
+      "name": "dev-09",
+      "transport": "prefix",
+      "prefix": [
+        "limactl",
+        "shell",
+        "thesis-dev-09",
+        "--"
+      ],
+      "workdir": "/home/sky.linux/optbinlog/demo",
+      "python": "python3",
+      "build_cmd": "gcc -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -Iinclude -o optbinlog_bench_linux '/Users/sky/Documents/graduation design/demo/optbinlog_bench.c' src/optbinlog_shared.c src/optbinlog_eventlog.c src/optbinlog_binlog.c && sudo -n sh -c 'for p in /sys/kernel/tracing/tracing_on /sys/kernel/debug/tracing/tracing_on; do if [ -w \"$p\" ]; then echo 1 > \"$p\"; exit 0; fi; done; exit 1'",
+      "bench_script": "run_bench.py",
+      "bench_bin": "/home/sky.linux/optbinlog/demo/optbinlog_bench_linux",
+      "eventlog_dir": "./eventlogst",
+      "records": 80000,
+      "repeats": 5,
+      "warmup": 1,
+      "modes": "text,binary,ftrace,nanolog_like,zephyr_like,ulog_async_like,hilog_lite_like",
+      "baseline": "text",
+      "trace_marker": "/sys/kernel/tracing/trace_marker",
+      "bench_prefix": "sudo -n",
+      "netem": {
+        "iface": "eth0",
+        "delay_ms": 15,
+        "jitter_ms": 4,
+        "loss_pct": 0.2,
+        "rate_mbit": 80
+      }
+    },
+    {
+      "name": "dev-10",
+      "transport": "prefix",
+      "prefix": [
+        "limactl",
+        "shell",
+        "thesis-dev-10",
+        "--"
+      ],
+      "workdir": "/home/sky.linux/optbinlog/demo",
+      "python": "python3",
+      "build_cmd": "gcc -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -Iinclude -o optbinlog_bench_linux '/Users/sky/Documents/graduation design/demo/optbinlog_bench.c' src/optbinlog_shared.c src/optbinlog_eventlog.c src/optbinlog_binlog.c && sudo -n sh -c 'for p in /sys/kernel/tracing/tracing_on /sys/kernel/debug/tracing/tracing_on; do if [ -w \"$p\" ]; then echo 1 > \"$p\"; exit 0; fi; done; exit 1'",
+      "bench_script": "run_bench.py",
+      "bench_bin": "/home/sky.linux/optbinlog/demo/optbinlog_bench_linux",
+      "eventlog_dir": "./eventlogst",
+      "records": 80000,
+      "repeats": 5,
+      "warmup": 1,
+      "modes": "text,binary,ftrace,nanolog_like,zephyr_like,ulog_async_like,hilog_lite_like",
+      "baseline": "text",
+      "trace_marker": "/sys/kernel/tracing/trace_marker",
+      "bench_prefix": "sudo -n",
+      "netem": {
+        "iface": "eth0",
+        "delay_ms": 15,
+        "jitter_ms": 4,
+        "loss_pct": 0.2,
+        "rate_mbit": 80
+      }
+    }
+  ]
+}

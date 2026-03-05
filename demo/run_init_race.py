@@ -6,7 +6,7 @@ import subprocess
 import time
 
 ROOT = os.path.dirname(__file__)
-EVENTLOG_DIR = os.path.join(ROOT, "eventlogst")
+EVENTLOG_DIR = os.environ.get("OPTBINLOG_EVENTLOG_DIR", os.path.join(ROOT, "eventlogst"))
 OUT_DIR = os.environ.get("OPTBINLOG_INIT_OUT_DIR", os.path.join(ROOT, "init_race"))
 RUN_DIR = os.path.join(OUT_DIR, "runs")
 SHARED = os.path.join(OUT_DIR, "shared_eventtag.bin")
