@@ -22,8 +22,8 @@ MERGED_RESULT_SVG = os.path.join(HYBRID_OUT, "bench_result_merged.svg")
 MERGED_STATS_SVG = os.path.join(HYBRID_OUT, "bench_stats_merged.svg")
 DUAL_RELATIVE_SVG = os.path.join(HYBRID_OUT, "bench_dual_relative.svg")
 
-LOCAL_MODES = os.environ.get("OPTBINLOG_HYBRID_LOCAL_MODES", "text,binary,syslog")
-LINUX_MODES = os.environ.get("OPTBINLOG_HYBRID_LINUX_MODES", "binary,ftrace")
+LOCAL_MODES = os.environ.get("OPTBINLOG_HYBRID_LOCAL_MODES", "text,binary,syslog,nanolog_like,zephyr_deferred_like")
+LINUX_MODES = os.environ.get("OPTBINLOG_HYBRID_LINUX_MODES", "binary,ftrace,nanolog_like,zephyr_deferred_like")
 BASELINE_MODE = os.environ.get("OPTBINLOG_BENCH_BASELINE", "text")
 LINUX_BASELINE_MODE = os.environ.get("OPTBINLOG_HYBRID_LINUX_BASELINE", "binary")
 FORCE_LOCAL_BASELINE = os.environ.get("OPTBINLOG_HYBRID_FORCE_LOCAL_BASELINE", "1") != "0"
@@ -616,14 +616,16 @@ def run_local(modes):
 
 
 def run_linux(modes):
-    trace_sink = detect_linux_ftrace_sink()
+    need_ftrace = "ftrace" in set(modes)
+    trace_sink = detect_linux_ftrace_sink() if need_ftrace else ""
     linux_env = {
         "OPTBINLOG_BENCH_MODES": ",".join(modes),
         "OPTBINLOG_BENCH_BASELINE": LINUX_BASELINE_MODE if LINUX_BASELINE_MODE in modes else modes[0],
         "OPTBINLOG_BENCH_BIN": LINUX_BIN,
         "OPTBINLOG_BENCH_OUT_DIR": LINUX_REMOTE_OUT,
-        "OPTBINLOG_TRACE_MARKER": trace_sink,
     }
+    if need_ftrace:
+        linux_env["OPTBINLOG_TRACE_MARKER"] = trace_sink
     for k in [
         "OPTBINLOG_BENCH_RECORDS",
         "OPTBINLOG_BENCH_REPEATS",

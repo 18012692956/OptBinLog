@@ -39,9 +39,29 @@ static uint64_t max_for_bits(int bits) {
 static void usage(const char* prog) {
     fprintf(stderr,
         "Usage:\n"
-        "  %s --mode text|binary|syslog|ftrace --eventlog-dir <dir> --out-dir <dir> --devices N --records-per-device N [--shared <file>] [--strict-perm]\n",
+        "  %s --mode text|binary|syslog|ftrace|nanolog_like|zephyr_deferred_like --eventlog-dir <dir> --out-dir <dir> --devices N --records-per-device N [--shared <file>] [--strict-perm]\n",
         prog
     );
+}
+
+typedef struct {
+    uint64_t ts_ns;
+    uint32_t seq;
+    uint32_t code;
+    int32_t temp_x10;
+    uint16_t tag;
+    uint16_t level;
+} NanoPackedRecord;
+
+static NanoPackedRecord make_nano_record(long i, int device_id, uint64_t* rnd) {
+    NanoPackedRecord r;
+    r.ts_ns = now_ns();
+    r.seq = (uint32_t)(xorshift64(rnd) & 0xFFFFFFFFu);
+    r.code = (uint32_t)(1000u + (xorshift64(rnd) % 250u));
+    r.temp_x10 = (int32_t)(200 + (int32_t)(xorshift64(rnd) % 80u));
+    r.tag = (uint16_t)(3000 + ((device_id + (int)i) % 32));
+    r.level = (uint16_t)(i % 8);
+    return r;
 }
 
 static int ensure_dir(const char* path) {
@@ -334,6 +354,84 @@ static int write_text_logs(const char* eventlog_dir, const char* out_dir, int de
     return 0;
 }
 
+static int write_nanolog_like_logs(const char* out_dir, int device_id, long records) {
+    char path[512];
+    snprintf(path, sizeof(path), "%s/device_%02d.nlog", out_dir, device_id);
+    FILE* fp = fopen(path, "wb");
+    if (!fp) return -1;
+    setvbuf(fp, NULL, _IOFBF, 1 << 20);
+
+    const size_t batch_cap = 1024;
+    NanoPackedRecord* batch = malloc(batch_cap * sizeof(NanoPackedRecord));
+    if (!batch) {
+        fclose(fp);
+        return -1;
+    }
+
+    uint64_t rnd = 0x123456789abcdef0ULL ^ (uint64_t)device_id;
+    size_t n_batch = 0;
+    for (long i = 0; i < records; i++) {
+        batch[n_batch++] = make_nano_record(i, device_id, &rnd);
+        if (n_batch == batch_cap) {
+            if (fwrite(batch, sizeof(NanoPackedRecord), n_batch, fp) != n_batch) {
+                free(batch);
+                fclose(fp);
+                return -1;
+            }
+            n_batch = 0;
+        }
+    }
+    if (n_batch > 0) {
+        if (fwrite(batch, sizeof(NanoPackedRecord), n_batch, fp) != n_batch) {
+            free(batch);
+            fclose(fp);
+            return -1;
+        }
+    }
+    free(batch);
+    fclose(fp);
+    return 0;
+}
+
+static int write_zephyr_deferred_like_logs(const char* out_dir, int device_id, long records) {
+    char path[512];
+    snprintf(path, sizeof(path), "%s/device_%02d.zlog", out_dir, device_id);
+    FILE* fp = fopen(path, "wb");
+    if (!fp) return -1;
+    setvbuf(fp, NULL, _IOFBF, 1 << 20);
+
+    const size_t queue_cap = 256;
+    NanoPackedRecord* queue = malloc(queue_cap * sizeof(NanoPackedRecord));
+    if (!queue) {
+        fclose(fp);
+        return -1;
+    }
+
+    uint64_t rnd = 0x123456789abcdef0ULL ^ (uint64_t)device_id;
+    size_t qn = 0;
+    for (long i = 0; i < records; i++) {
+        queue[qn++] = make_nano_record(i, device_id, &rnd);
+        if (qn == queue_cap) {
+            if (fwrite(queue, sizeof(NanoPackedRecord), qn, fp) != qn) {
+                free(queue);
+                fclose(fp);
+                return -1;
+            }
+            qn = 0;
+        }
+    }
+    if (qn > 0) {
+        if (fwrite(queue, sizeof(NanoPackedRecord), qn, fp) != qn) {
+            free(queue);
+            fclose(fp);
+            return -1;
+        }
+    }
+    free(queue);
+    fclose(fp);
+    return 0;
+}
+
 static int write_binary_logs(const char* eventlog_dir, const char* shared_path, const char* out_dir, int device_id, long records, int strict_perm) {
     OptbinlogTagList tags;
     optbinlog_taglist_init(&tags);
@@ -584,6 +682,10 @@ int main(int argc, char** argv) {
                 rc = write_syslog_logs(eventlog_dir, out_dir, d, records);
             } else if (strcmp(mode, "ftrace") == 0) {
                 rc = write_ftrace_logs(eventlog_dir, out_dir, d, records, ftrace_run_token);
+            } else if (strcmp(mode, "nanolog_like") == 0) {
+                rc = write_nanolog_like_logs(out_dir, d, records);
+            } else if (strcmp(mode, "zephyr_deferred_like") == 0) {
+                rc = write_zephyr_deferred_like_logs(out_dir, d, records);
             } else {
                 rc = -1;
             }
@@ -623,6 +725,10 @@ int main(int argc, char** argv) {
         if (payload_total < 0) payload_total = 0;
         if ((unsigned long long)payload_total > observed) total_bytes = payload_total;
         else total_bytes = (long long)observed;
+    } else if (strcmp(mode, "nanolog_like") == 0) {
+        total_bytes = sum_sizes(out_dir, "nlog");
+    } else if (strcmp(mode, "zephyr_deferred_like") == 0) {
+        total_bytes = sum_sizes(out_dir, "zlog");
     } else {
         fprintf(stderr, "unsupported mode: %s\n", mode);
         return 1;

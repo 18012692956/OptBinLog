@@ -20,8 +20,8 @@ LINUX_OUT = os.path.join(HYBRID_OUT, "linux")
 MERGED_JSON = os.path.join(HYBRID_OUT, "bench_multi_merged.json")
 DUAL_HEATMAP_SVG = os.path.join(HYBRID_OUT, "bench_multi_dual_relative.svg")
 
-LOCAL_MODES = os.environ.get("OPTBINLOG_HYBRID_MULTI_LOCAL_MODES", "text,binary,syslog")
-LINUX_MODES = os.environ.get("OPTBINLOG_HYBRID_MULTI_LINUX_MODES", "binary,ftrace")
+LOCAL_MODES = os.environ.get("OPTBINLOG_HYBRID_MULTI_LOCAL_MODES", "text,binary,syslog,nanolog_like,zephyr_deferred_like")
+LINUX_MODES = os.environ.get("OPTBINLOG_HYBRID_MULTI_LINUX_MODES", "binary,ftrace,nanolog_like,zephyr_deferred_like")
 LOCAL_BASELINE = os.environ.get("OPTBINLOG_MULTI_BASELINE", "text")
 LINUX_BASELINE = os.environ.get("OPTBINLOG_HYBRID_MULTI_LINUX_BASELINE", "binary")
 LINUX_INSTANCE = os.environ.get("OPTBINLOG_LINUX_INSTANCE", "thesis-linux")
@@ -212,14 +212,16 @@ def run_local(local_modes):
 
 
 def run_linux(linux_modes):
-    trace_sink = detect_linux_ftrace_sink()
+    need_ftrace = "ftrace" in set(linux_modes)
+    trace_sink = detect_linux_ftrace_sink() if need_ftrace else ""
     linux_env = {
         "OPTBINLOG_MULTI_OUT_DIR": LINUX_REMOTE_OUT,
         "OPTBINLOG_MULTI_BIN": LINUX_BIN,
         "OPTBINLOG_MULTI_MODES": ",".join(linux_modes),
         "OPTBINLOG_MULTI_BASELINE": LINUX_BASELINE if LINUX_BASELINE in linux_modes else linux_modes[0],
-        "OPTBINLOG_TRACE_MARKER": trace_sink,
     }
+    if need_ftrace:
+        linux_env["OPTBINLOG_TRACE_MARKER"] = trace_sink
     propagate_env(
         os.environ,
         linux_env,

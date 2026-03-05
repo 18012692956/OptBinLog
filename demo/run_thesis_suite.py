@@ -274,8 +274,8 @@ def main():
     env_single.update(
         {
             "OPTBINLOG_HYBRID_OUT_DIR": single_out,
-            "OPTBINLOG_HYBRID_LOCAL_MODES": "text,binary,syslog",
-            "OPTBINLOG_HYBRID_LINUX_MODES": "text,binary,ftrace",
+            "OPTBINLOG_HYBRID_LOCAL_MODES": "text,binary,syslog,nanolog_like,zephyr_deferred_like",
+            "OPTBINLOG_HYBRID_LINUX_MODES": "text,binary,ftrace,nanolog_like,zephyr_deferred_like",
             "OPTBINLOG_BENCH_BASELINE": "text",
             "OPTBINLOG_HYBRID_LINUX_BASELINE": "binary",
             "OPTBINLOG_BENCH_RECORDS": str(cfg["single_records"]),
@@ -291,8 +291,8 @@ def main():
     env_multi.update(
         {
             "OPTBINLOG_HYBRID_MULTI_OUT_DIR": multi_out,
-            "OPTBINLOG_HYBRID_MULTI_LOCAL_MODES": "text,binary,syslog",
-            "OPTBINLOG_HYBRID_MULTI_LINUX_MODES": "text,binary,ftrace",
+            "OPTBINLOG_HYBRID_MULTI_LOCAL_MODES": "text,binary,syslog,nanolog_like,zephyr_deferred_like",
+            "OPTBINLOG_HYBRID_MULTI_LINUX_MODES": "text,binary,ftrace,nanolog_like,zephyr_deferred_like",
             "OPTBINLOG_MULTI_BASELINE": "text",
             "OPTBINLOG_HYBRID_MULTI_LINUX_BASELINE": "binary",
             "OPTBINLOG_MULTI_REPEATS": str(cfg["multi_repeats"]),

@@ -23,10 +23,19 @@ typedef enum {
     MODE_JSONL = 2,
 } TextLikeMode;
 
+typedef struct {
+    uint64_t ts_ns;
+    uint32_t seq;
+    uint32_t code;
+    int32_t temp_x10;
+    uint16_t tag;
+    uint16_t level;
+} NanoPackedRecord;
+
 static void usage(const char* prog) {
     fprintf(stderr,
         "Usage:\n"
-        "  %s --mode text|csv|jsonl|binary|syslog|ftrace --eventlog-dir <dir> --out <file> --records N [--shared <file>] [--strict-perm]\n",
+        "  %s --mode text|csv|jsonl|binary|syslog|ftrace|nanolog_like|zephyr_deferred_like|nanolog_semantic_like|zephyr_deferred_semantic_like --eventlog-dir <dir> --out <file> --records N [--shared <file>] [--strict-perm]\n",
         prog
     );
 }
@@ -59,6 +68,74 @@ static uint64_t xorshift64(uint64_t* state) {
 static uint64_t max_for_bits(int bits) {
     if (bits >= 64) return UINT64_MAX;
     return (1ULL << bits) - 1ULL;
+}
+
+static uint32_t crc32_update(uint32_t crc, uint8_t b) {
+    crc ^= b;
+    for (int i = 0; i < 8; i++) {
+        uint32_t mask = (uint32_t)(-(int32_t)(crc & 1u));
+        crc = (crc >> 1) ^ (0xEDB88320u & mask);
+    }
+    return crc;
+}
+
+static uint32_t crc32_compute(const uint8_t* data, size_t len) {
+    uint32_t crc = 0xFFFFFFFFu;
+    for (size_t i = 0; i < len; i++) {
+        crc = crc32_update(crc, data[i]);
+    }
+    return ~crc;
+}
+
+static void write_le16(uint8_t* dst, uint16_t v) {
+    dst[0] = (uint8_t)(v & 0xFFu);
+    dst[1] = (uint8_t)((v >> 8) & 0xFFu);
+}
+
+static void write_le32(uint8_t* dst, uint32_t v) {
+    dst[0] = (uint8_t)(v & 0xFFu);
+    dst[1] = (uint8_t)((v >> 8) & 0xFFu);
+    dst[2] = (uint8_t)((v >> 16) & 0xFFu);
+    dst[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
+
+static NanoPackedRecord make_nano_record(long i, uint64_t* rnd) {
+    NanoPackedRecord r;
+    r.ts_ns = now_ns();
+    r.seq = (uint32_t)(xorshift64(rnd) & 0xFFFFFFFFu);
+    r.code = (uint32_t)(1000u + (xorshift64(rnd) % 250u));
+    r.temp_x10 = (int32_t)(200 + (int32_t)(xorshift64(rnd) % 80u));
+    r.tag = (uint16_t)(3000 + (i % 32));
+    r.level = (uint16_t)(i % 8);
+    return r;
+}
+
+static size_t encode_semantic_payload(uint8_t* out, const NanoPackedRecord* r) {
+    size_t off = 0;
+    memcpy(out + off, &r->ts_ns, sizeof(uint64_t));
+    off += sizeof(uint64_t);
+    write_le16(out + off, r->tag);
+    off += sizeof(uint16_t);
+    out[off++] = 4u; /* ele_count */
+    write_le32(out + off, r->seq);
+    off += sizeof(uint32_t);
+    write_le32(out + off, r->code);
+    off += sizeof(uint32_t);
+    write_le32(out + off, (uint32_t)r->temp_x10);
+    off += sizeof(uint32_t);
+    write_le16(out + off, r->level);
+    off += sizeof(uint16_t);
+    return off;
+}
+
+static size_t encode_semantic_frame(uint8_t* out, const NanoPackedRecord* r) {
+    uint8_t payload[64];
+    size_t payload_len = encode_semantic_payload(payload, r);
+    write_le32(out, (uint32_t)payload_len);
+    memcpy(out + 4, payload, payload_len);
+    uint32_t crc = crc32_compute(payload, payload_len);
+    write_le32(out + 4 + payload_len, crc);
+    return 4 + payload_len + 4;
 }
 
 static int appendf(char** p, size_t* left, const char* fmt, ...) {
@@ -544,6 +621,194 @@ static int bench_ftrace(const char* eventlog_dir, long records) {
     return 0;
 }
 
+static int bench_nanolog_like(const char* out_path, long records) {
+    uint64_t t_e2e0 = now_ns();
+    FILE* fp = fopen(out_path, "wb");
+    if (!fp) {
+        fprintf(stderr, "open %s failed: %s\n", out_path, strerror(errno));
+        return -1;
+    }
+    setvbuf(fp, NULL, _IOFBF, 1 << 20);
+
+    uint64_t t_write0 = now_ns();
+    NanoPackedRecord* staging = malloc((size_t)records * sizeof(NanoPackedRecord));
+    if (!staging) {
+        fclose(fp);
+        fprintf(stderr, "OOM\n");
+        return -1;
+    }
+    uint64_t rnd = 0x123456789abcdef0ULL;
+    for (long i = 0; i < records; i++) {
+        staging[i] = make_nano_record(i, &rnd);
+    }
+    size_t written = fwrite(staging, sizeof(NanoPackedRecord), (size_t)records, fp);
+    fflush(fp);
+    uint64_t t_write1 = now_ns();
+
+    free(staging);
+    fclose(fp);
+    uint64_t t_e2e1 = now_ns();
+
+    uint64_t bytes = (uint64_t)written * (uint64_t)sizeof(NanoPackedRecord);
+    long rss = max_rss_kb();
+    double write_ms = (double)(t_write1 - t_write0) / 1e6;
+    double end_to_end_ms = (double)(t_e2e1 - t_e2e0) / 1e6;
+    double prep_ms = (double)(t_write0 - t_e2e0) / 1e6;
+    double post_ms = (double)(t_e2e1 - t_write1) / 1e6;
+    printf("mode,nanolog_like,records,%ld,elapsed_ms,%.3f,write_only_ms,%.3f,end_to_end_ms,%.3f,prep_ms,%.3f,post_ms,%.3f,bytes,%llu,shared_bytes,0,total_bytes,%llu,peak_kb,%ld\n",
+           records, write_ms, write_ms, end_to_end_ms, prep_ms, post_ms,
+           (unsigned long long)bytes, (unsigned long long)bytes, rss);
+    return 0;
+}
+
+static int bench_zephyr_deferred_like(const char* out_path, long records) {
+    uint64_t t_e2e0 = now_ns();
+    FILE* fp = fopen(out_path, "wb");
+    if (!fp) {
+        fprintf(stderr, "open %s failed: %s\n", out_path, strerror(errno));
+        return -1;
+    }
+    setvbuf(fp, NULL, _IOFBF, 1 << 20);
+
+    const size_t batch_cap = 1024;
+    NanoPackedRecord* batch = malloc(batch_cap * sizeof(NanoPackedRecord));
+    if (!batch) {
+        fclose(fp);
+        fprintf(stderr, "OOM\n");
+        return -1;
+    }
+
+    uint64_t bytes = 0;
+    uint64_t rnd = 0x123456789abcdef0ULL;
+    size_t n_batch = 0;
+
+    uint64_t t_write0 = now_ns();
+    for (long i = 0; i < records; i++) {
+        batch[n_batch++] = make_nano_record(i, &rnd);
+        if (n_batch == batch_cap) {
+            size_t n = fwrite(batch, sizeof(NanoPackedRecord), n_batch, fp);
+            bytes += (uint64_t)n * (uint64_t)sizeof(NanoPackedRecord);
+            n_batch = 0;
+        }
+    }
+    if (n_batch > 0) {
+        size_t n = fwrite(batch, sizeof(NanoPackedRecord), n_batch, fp);
+        bytes += (uint64_t)n * (uint64_t)sizeof(NanoPackedRecord);
+    }
+    fflush(fp);
+    uint64_t t_write1 = now_ns();
+
+    free(batch);
+    fclose(fp);
+    uint64_t t_e2e1 = now_ns();
+
+    long rss = max_rss_kb();
+    double write_ms = (double)(t_write1 - t_write0) / 1e6;
+    double end_to_end_ms = (double)(t_e2e1 - t_e2e0) / 1e6;
+    double prep_ms = (double)(t_write0 - t_e2e0) / 1e6;
+    double post_ms = (double)(t_e2e1 - t_write1) / 1e6;
+    printf("mode,zephyr_deferred_like,records,%ld,elapsed_ms,%.3f,write_only_ms,%.3f,end_to_end_ms,%.3f,prep_ms,%.3f,post_ms,%.3f,bytes,%llu,shared_bytes,0,total_bytes,%llu,peak_kb,%ld\n",
+           records, write_ms, write_ms, end_to_end_ms, prep_ms, post_ms,
+           (unsigned long long)bytes, (unsigned long long)bytes, rss);
+    return 0;
+}
+
+static int bench_nanolog_semantic_like(const char* out_path, long records) {
+    uint64_t t_e2e0 = now_ns();
+    FILE* fp = fopen(out_path, "wb");
+    if (!fp) {
+        fprintf(stderr, "open %s failed: %s\n", out_path, strerror(errno));
+        return -1;
+    }
+    setvbuf(fp, NULL, _IOFBF, 1 << 20);
+
+    size_t cap = (size_t)records * 40u;
+    uint8_t* staging = malloc(cap);
+    if (!staging) {
+        fclose(fp);
+        fprintf(stderr, "OOM\n");
+        return -1;
+    }
+
+    uint64_t rnd = 0x123456789abcdef0ULL;
+    size_t off = 0;
+    uint64_t t_write0 = now_ns();
+    for (long i = 0; i < records; i++) {
+        NanoPackedRecord r = make_nano_record(i, &rnd);
+        off += encode_semantic_frame(staging + off, &r);
+    }
+    size_t written = fwrite(staging, 1, off, fp);
+    fflush(fp);
+    uint64_t t_write1 = now_ns();
+
+    free(staging);
+    fclose(fp);
+    uint64_t t_e2e1 = now_ns();
+
+    long rss = max_rss_kb();
+    double write_ms = (double)(t_write1 - t_write0) / 1e6;
+    double end_to_end_ms = (double)(t_e2e1 - t_e2e0) / 1e6;
+    double prep_ms = (double)(t_write0 - t_e2e0) / 1e6;
+    double post_ms = (double)(t_e2e1 - t_write1) / 1e6;
+    printf("mode,nanolog_semantic_like,records,%ld,elapsed_ms,%.3f,write_only_ms,%.3f,end_to_end_ms,%.3f,prep_ms,%.3f,post_ms,%.3f,bytes,%llu,shared_bytes,0,total_bytes,%llu,peak_kb,%ld\n",
+           records, write_ms, write_ms, end_to_end_ms, prep_ms, post_ms,
+           (unsigned long long)written, (unsigned long long)written, rss);
+    return 0;
+}
+
+static int bench_zephyr_deferred_semantic_like(const char* out_path, long records) {
+    uint64_t t_e2e0 = now_ns();
+    FILE* fp = fopen(out_path, "wb");
+    if (!fp) {
+        fprintf(stderr, "open %s failed: %s\n", out_path, strerror(errno));
+        return -1;
+    }
+    setvbuf(fp, NULL, _IOFBF, 1 << 20);
+
+    const size_t batch_cap = 1024;
+    uint8_t* batch = malloc(batch_cap * 40u);
+    if (!batch) {
+        fclose(fp);
+        fprintf(stderr, "OOM\n");
+        return -1;
+    }
+
+    uint64_t rnd = 0x123456789abcdef0ULL;
+    uint64_t bytes = 0;
+    size_t off = 0;
+    uint64_t t_write0 = now_ns();
+    for (long i = 0; i < records; i++) {
+        NanoPackedRecord r = make_nano_record(i, &rnd);
+        size_t n = encode_semantic_frame(batch + off, &r);
+        off += n;
+        if (off + 40u > batch_cap * 40u) {
+            size_t w = fwrite(batch, 1, off, fp);
+            bytes += (uint64_t)w;
+            off = 0;
+        }
+    }
+    if (off > 0) {
+        size_t w = fwrite(batch, 1, off, fp);
+        bytes += (uint64_t)w;
+    }
+    fflush(fp);
+    uint64_t t_write1 = now_ns();
+
+    free(batch);
+    fclose(fp);
+    uint64_t t_e2e1 = now_ns();
+
+    long rss = max_rss_kb();
+    double write_ms = (double)(t_write1 - t_write0) / 1e6;
+    double end_to_end_ms = (double)(t_e2e1 - t_e2e0) / 1e6;
+    double prep_ms = (double)(t_write0 - t_e2e0) / 1e6;
+    double post_ms = (double)(t_e2e1 - t_write1) / 1e6;
+    printf("mode,zephyr_deferred_semantic_like,records,%ld,elapsed_ms,%.3f,write_only_ms,%.3f,end_to_end_ms,%.3f,prep_ms,%.3f,post_ms,%.3f,bytes,%llu,shared_bytes,0,total_bytes,%llu,peak_kb,%ld\n",
+           records, write_ms, write_ms, end_to_end_ms, prep_ms, post_ms,
+           (unsigned long long)bytes, (unsigned long long)bytes, rss);
+    return 0;
+}
+
 static int bench_binary(const char* eventlog_dir, const char* shared_path, const char* out_path, long records, int strict_perm) {
     uint64_t t_e2e0 = now_ns();
 
@@ -692,6 +957,22 @@ int main(int argc, char** argv) {
     }
     if (strcmp(mode, "ftrace") == 0) {
         return bench_ftrace(eventlog_dir, records) == 0 ? 0 : 1;
+    }
+    if (strcmp(mode, "nanolog_like") == 0) {
+        if (!out_path) { usage(argv[0]); return 1; }
+        return bench_nanolog_like(out_path, records) == 0 ? 0 : 1;
+    }
+    if (strcmp(mode, "zephyr_deferred_like") == 0) {
+        if (!out_path) { usage(argv[0]); return 1; }
+        return bench_zephyr_deferred_like(out_path, records) == 0 ? 0 : 1;
+    }
+    if (strcmp(mode, "nanolog_semantic_like") == 0) {
+        if (!out_path) { usage(argv[0]); return 1; }
+        return bench_nanolog_semantic_like(out_path, records) == 0 ? 0 : 1;
+    }
+    if (strcmp(mode, "zephyr_deferred_semantic_like") == 0) {
+        if (!out_path) { usage(argv[0]); return 1; }
+        return bench_zephyr_deferred_semantic_like(out_path, records) == 0 ? 0 : 1;
     }
 
     usage(argv[0]);

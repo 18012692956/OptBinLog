@@ -97,6 +97,10 @@ def run_once(mode, idx, warmup=False):
         "binary": "bin",
         "syslog": "syslog",
         "ftrace": "ftrace",
+        "nanolog_like": "nlog",
+        "zephyr_deferred_like": "zlog",
+        "nanolog_semantic_like": "nslog",
+        "zephyr_deferred_semantic_like": "zslog",
     }
     ext = ext_map.get(mode, "out")
     out_name = f"{mode}_{suffix}_{idx:03d}.{ext}"
