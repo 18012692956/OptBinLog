@@ -1,0 +1,1 @@
+1400 hilog_lite_aligned (domain|L|16),(tag|L|16),(level|L|8),(seq|L|32),(msg|S|256)

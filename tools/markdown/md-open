@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$#" -lt 1 ]; then
+  echo "Usage: tools/markdown/md-open <file.md>"
+  exit 1
+fi
+
+target="$1"
+if [ ! -f "$target" ]; then
+  echo "File not found: $target"
+  exit 1
+fi
+
+if [ -d "/Applications/Obsidian.app" ]; then
+  open -a "/Applications/Obsidian.app" "$target"
+elif [ -d "/Applications/MarkText.app" ]; then
+  open -a "/Applications/MarkText.app" "$target"
+else
+  echo "No dedicated Markdown reader found. Falling back to VS Code."
+  code -r "$target"
+fi

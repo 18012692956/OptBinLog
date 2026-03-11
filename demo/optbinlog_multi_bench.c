@@ -97,13 +97,18 @@ static int appendf(char** p, size_t* left, const char* fmt, ...) {
     return 0;
 }
 
+static int text_profile_semantic_enabled(void) {
+    const char* profile = getenv("OPTBINLOG_TEXT_PROFILE");
+    if (!profile || !profile[0]) return 0;
+    return strncmp(profile, "semantic", 8) == 0;
+}
+
 static int format_plain_text_payload(long i, int device_id, uint64_t* rnd, char* out, size_t cap) {
     uint64_t seq = xorshift64(rnd);
     uint64_t code = xorshift64(rnd) % 100000ULL;
     double temp = (double)(xorshift64(rnd) % 8000ULL) / 100.0;
     const char* lvl = (seq % 10ULL == 0ULL) ? "W" : "I";
-    const char* profile = getenv("OPTBINLOG_TEXT_PROFILE");
-    int semantic = profile && strcmp(profile, "semantic") == 0;
+    int semantic = text_profile_semantic_enabled();
     if (semantic) {
         return snprintf(
                    out,
@@ -355,8 +360,6 @@ static int write_counter_file(const char* out_dir, int device_id, unsigned long 
 }
 
 static int write_text_logs(const char* eventlog_dir, const char* out_dir, int device_id, long records) {
-    (void)eventlog_dir;
-
     char path[512];
     snprintf(path, sizeof(path), "%s/device_%02d.txt", out_dir, device_id);
     FILE* fp = fopen(path, "wb");
@@ -364,18 +367,43 @@ static int write_text_logs(const char* eventlog_dir, const char* out_dir, int de
         return -1;
     }
 
-    uint64_t rnd = 0x123456789abcdef0ULL ^ (uint64_t)device_id;
-    for (long i = 0; i < records; i++) {
-        char line[1024];
-        if (format_plain_text_payload(i, device_id, &rnd, line, sizeof(line)) != 0) {
+    int semantic = text_profile_semantic_enabled();
+    SyslogLineList semantic_lines;
+    int semantic_lines_loaded = 0;
+    if (semantic) {
+        if (load_syslog_lines(eventlog_dir, &semantic_lines) != 0 || semantic_lines.len == 0) {
             fclose(fp);
             return -1;
         }
-        fputs(line, fp);
-        fputc('\n', fp);
+        semantic_lines_loaded = 1;
+    }
+
+    uint64_t rnd = 0x123456789abcdef0ULL ^ (uint64_t)device_id;
+    for (long i = 0; i < records; i++) {
+        int rc = 0;
+        if (semantic) {
+            const char* line = semantic_lines.items[(size_t)(i % (long)semantic_lines.len)];
+            if (fputs(line, fp) == EOF || fputc('\n', fp) == EOF) {
+                rc = -1;
+            }
+        } else {
+            char line[1024];
+            rc = format_plain_text_payload(i, device_id, &rnd, line, sizeof(line));
+            if (rc == 0) {
+                if (fputs(line, fp) == EOF || fputc('\n', fp) == EOF) {
+                    rc = -1;
+                }
+            }
+        }
+        if (rc != 0) {
+            fclose(fp);
+            if (semantic_lines_loaded) syslog_line_list_free(&semantic_lines);
+            return -1;
+        }
     }
 
     fclose(fp);
+    if (semantic_lines_loaded) syslog_line_list_free(&semantic_lines);
     return 0;
 }
 
@@ -550,20 +578,35 @@ static int write_binary_logs(const char* eventlog_dir, const char* shared_path, 
     (void)shared_path;
     (void)strict_perm;
 
+    size_t total_values = 0;
+    size_t total_string_fields = 0;
+    for (long i = 0; i < records; i++) {
+        OptbinlogTagDef* tag = &tags.items[i % tags.len];
+        total_values += (size_t)tag->ele_num;
+        for (int e = 0; e < tag->ele_num; e++) {
+            if (tag->eles[e].type_char == 'S') {
+                total_string_fields++;
+            }
+        }
+    }
+
     OptbinlogRecord* recs = calloc((size_t)records, sizeof(OptbinlogRecord));
-    if (!recs) {
+    OptbinlogValue* values_pool = calloc(total_values ? total_values : 1, sizeof(OptbinlogValue));
+    char* string_pool = total_string_fields ? malloc(total_string_fields * 16u) : NULL;
+    if (!recs || !values_pool || (total_string_fields && !string_pool)) {
+        free(recs);
+        free(values_pool);
+        free(string_pool);
         optbinlog_taglist_free(&tags);
         return -1;
     }
 
     uint64_t rnd = 0x123456789abcdef0ULL ^ (uint64_t)device_id;
+    size_t val_off = 0;
+    size_t str_off = 0;
     for (long i = 0; i < records; i++) {
         OptbinlogTagDef* tag = &tags.items[i % tags.len];
-        OptbinlogValue* values = calloc((size_t)tag->ele_num, sizeof(OptbinlogValue));
-        if (!values) {
-            optbinlog_taglist_free(&tags);
-            return -1;
-        }
+        OptbinlogValue* values = values_pool + val_off;
         for (int e = 0; e < tag->ele_num; e++) {
             OptbinlogTagEleDef* ele = &tag->eles[e];
             if (ele->type_char == 'L') {
@@ -573,11 +616,8 @@ static int write_binary_logs(const char* eventlog_dir, const char* shared_path, 
                 double v = (double)(xorshift64(&rnd) % 10000) / 100.0;
                 values[e] = (OptbinlogValue){OPTBINLOG_VAL_D, 0, v, NULL};
             } else if (ele->type_char == 'S') {
-                char* buf = malloc(16);
-                if (!buf) {
-                    optbinlog_taglist_free(&tags);
-                    return -1;
-                }
+                char* buf = string_pool + str_off * 16u;
+                str_off++;
                 snprintf(buf, 16, "dev-%02d", device_id);
                 values[e] = (OptbinlogValue){OPTBINLOG_VAL_S, 0, 0.0, buf};
             }
@@ -586,20 +626,15 @@ static int write_binary_logs(const char* eventlog_dir, const char* shared_path, 
         recs[i].tag_id = tag->tag_id;
         recs[i].ele_count = tag->ele_num;
         recs[i].values = values;
+        val_off += (size_t)tag->ele_num;
     }
 
     char path[512];
     snprintf(path, sizeof(path), "%s/device_%02d.bin", out_dir, device_id);
     int rc = optbinlog_binlog_write(shared_path, path, recs, (size_t)records);
 
-    for (long i = 0; i < records; i++) {
-        for (int e = 0; e < recs[i].ele_count; e++) {
-            if (recs[i].values[e].kind == OPTBINLOG_VAL_S) {
-                free((void*)recs[i].values[e].s);
-            }
-        }
-        free(recs[i].values);
-    }
+    free(string_pool);
+    free(values_pool);
     free(recs);
     optbinlog_taglist_free(&tags);
     return rc;

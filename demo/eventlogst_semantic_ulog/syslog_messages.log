@@ -1,0 +1,5 @@
+# ulog async-like textual semantics
+ulog level=I module=net seq=3001 code=501 msg="socket timeout while reconnecting"
+ulog level=W module=storage seq=3002 code=711 msg="flash erase latency exceeded threshold"
+ulog level=E module=sensor seq=3003 code=810 msg="imu sample window checksum mismatch"
+ulog level=I module=power seq=3004 code=221 msg="battery profile updated from bms"

@@ -1,0 +1,1 @@
+1200 zephyr_aligned (seq|L|32),(code|L|32),(temp_x10|L|32),(source_id|L|16),(level|L|8),(dropped|L|16)

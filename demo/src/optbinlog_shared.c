@@ -18,6 +18,10 @@ _Static_assert(sizeof(OptbinlogBitmap) == (OPTBINLOG_EVENT_TAG_ARRAY_LEN / 8 + 1
 _Static_assert(sizeof(OptbinlogEventTagEle) == 33, "EventTagEle size mismatch");
 _Static_assert(sizeof(OptbinlogEventTag) == 54, "EventTag size mismatch");
 
+#define OPTBINLOG_TAG_ID_MAX 0x0FFF
+#define OPTBINLOG_TAG_ELE_NUM_MAX 0x0F
+#define OPTBINLOG_ELE_LEN_MAX_BYTES 0x3F
+
 static void* OPTBINLOG_MALLOC_START = NULL;
 static int OPTBINLOG_MALLOC_OFFSET = 0;
 static size_t OPTBINLOG_SHAREDMEM = 0;
@@ -71,24 +75,87 @@ static char* make_lock_path(const char* shared_path) {
     return lock_path;
 }
 
-static int acquire_init_lock(const char* shared_path, int* lock_fd, uint32_t* wait_loops, uint32_t* wait_ms) {
+static int acquire_init_lock(const char* shared_path,
+                             int* lock_fd,
+                             int* lock_mode,
+                             char** lock_path_out,
+                             uint32_t* wait_loops,
+                             uint32_t* wait_ms) {
     int timeout_ms = getenv_int("OPTBINLOG_INIT_LOCK_TIMEOUT_MS", 5000, 100, 120000);
     int sleep_us = getenv_int("OPTBINLOG_INIT_LOCK_SLEEP_US", 10000, 100, 1000000);
+    const char* lock_mode_env = getenv("OPTBINLOG_INIT_LOCK_MODE");
+    int use_create_excl = (lock_mode_env && strcmp(lock_mode_env, "create_excl") == 0) ? 1 : 0;
 
     char* lock_path = make_lock_path(shared_path);
     if (!lock_path) return -1;
 
-    int fd = open(lock_path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
-    free(lock_path);
-    if (fd < 0) return -1;
-
     uint64_t start_ms = monotonic_ms();
     uint32_t loops = 0;
+    if (use_create_excl) {
+        for (;;) {
+            int fd = open(lock_path, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
+            if (fd >= 0) {
+                uint64_t elapsed = monotonic_ms() - start_ms;
+                if (wait_loops) *wait_loops = loops;
+                if (wait_ms) *wait_ms = (uint32_t)elapsed;
+                if (lock_mode) *lock_mode = 1;
+                if (lock_path_out) {
+                    *lock_path_out = lock_path;
+                } else {
+                    free(lock_path);
+                }
+                *lock_fd = fd;
+                return 0;
+            }
+            if (errno == EINTR) {
+                continue;
+            }
+            if (errno == ENOENT) {
+                uint64_t elapsed = monotonic_ms() - start_ms;
+                if ((int)elapsed >= timeout_ms) {
+                    trace_event("init_lock_timeout");
+                    free(lock_path);
+                    errno = ETIMEDOUT;
+                    return -1;
+                }
+                trace_event("wait_initializing");
+                usleep((useconds_t)sleep_us);
+                loops++;
+                continue;
+            }
+            if (errno != EEXIST) {
+                free(lock_path);
+                return -1;
+            }
+            uint64_t elapsed = monotonic_ms() - start_ms;
+            if ((int)elapsed >= timeout_ms) {
+                trace_event("init_lock_timeout");
+                free(lock_path);
+                errno = ETIMEDOUT;
+                return -1;
+            }
+            trace_event("wait_initializing");
+            usleep((useconds_t)sleep_us);
+            loops++;
+        }
+    }
+
+    int fd = open(lock_path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+    if (fd < 0) {
+        free(lock_path);
+        return -1;
+    }
     for (;;) {
         if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
             uint64_t elapsed = monotonic_ms() - start_ms;
             if (wait_loops) *wait_loops = loops;
             if (wait_ms) *wait_ms = (uint32_t)elapsed;
+            if (lock_mode) *lock_mode = 0;
+            if (lock_path_out) {
+                *lock_path_out = lock_path;
+            } else {
+                free(lock_path);
+            }
             *lock_fd = fd;
             return 0;
         }
@@ -96,12 +163,14 @@ static int acquire_init_lock(const char* shared_path, int* lock_fd, uint32_t* wa
             continue;
         }
         if (errno != EWOULDBLOCK && errno != EAGAIN) {
+            free(lock_path);
             close(fd);
             return -1;
         }
         uint64_t elapsed = monotonic_ms() - start_ms;
         if ((int)elapsed >= timeout_ms) {
             trace_event("init_lock_timeout");
+            free(lock_path);
             close(fd);
             errno = ETIMEDOUT;
             return -1;
@@ -112,16 +181,25 @@ static int acquire_init_lock(const char* shared_path, int* lock_fd, uint32_t* wa
     }
 }
 
-static void release_init_lock(int* lock_fd) {
+static void release_init_lock(int* lock_fd, int lock_mode, char** lock_path) {
     if (!lock_fd || *lock_fd < 0) return;
-    (void)flock(*lock_fd, LOCK_UN);
+    if (lock_mode == 0) {
+        (void)flock(*lock_fd, LOCK_UN);
+    }
     close(*lock_fd);
+    if (lock_mode == 1 && lock_path && *lock_path) {
+        (void)unlink(*lock_path);
+    }
+    if (lock_path && *lock_path) {
+        free(*lock_path);
+        *lock_path = NULL;
+    }
     *lock_fd = -1;
 }
 
 static void* optbinlog_malloc(size_t size) {
     void* addr = NULL;
-    if ((size_t)OPTBINLOG_MALLOC_OFFSET + size >= OPTBINLOG_SHAREDMEM) {
+    if ((size_t)OPTBINLOG_MALLOC_OFFSET + size > OPTBINLOG_SHAREDMEM) {
         return NULL;
     }
     addr = (uint8_t*)OPTBINLOG_MALLOC_START + OPTBINLOG_MALLOC_OFFSET;
@@ -151,6 +229,22 @@ int optbinlog_bitmap_get_max(const OptbinlogBitmap* bm) {
     return max_idx;
 }
 
+static int bitmap_count_ones(const OptbinlogBitmap* bm) {
+    int cnt = 0;
+    for (int i = 0; i < OPTBINLOG_EVENT_TAG_ARRAY_LEN; i++) {
+        if (optbinlog_bitmap_get(bm, i)) cnt++;
+    }
+    return cnt;
+}
+
+static int bitmap_rank_inclusive(const OptbinlogBitmap* bm, int idx) {
+    int cnt = 0;
+    for (int i = 0; i <= idx; i++) {
+        if (optbinlog_bitmap_get(bm, i)) cnt++;
+    }
+    return cnt;
+}
+
 static int type_code_from_char(char c) {
     if (c == 'L') return 1;
     if (c == 'D') return 2;
@@ -167,6 +261,7 @@ static int range_within(size_t offset, size_t len, size_t total) {
 static int header_layout_valid(const OptbinlogSharedTag* hdr, size_t map_size) {
     if (hdr->header_version != OPTBINLOG_SHARED_HEADER_VERSION) return -1;
     if (hdr->num_arrays == 0 || hdr->num_arrays > 1000000u) return -1;
+    if (hdr->tag_count == 0 || hdr->tag_count > 1000000u) return -1;
     if (hdr->total_size != 0 && hdr->total_size != (uint32_t)map_size) return -1;
     if (hdr->bitmap_offset < (int)sizeof(OptbinlogSharedTag)) return -1;
     if (hdr->eventtag_offset < (int)sizeof(OptbinlogSharedTag)) return -1;
@@ -174,8 +269,11 @@ static int header_layout_valid(const OptbinlogSharedTag* hdr, size_t map_size) {
     size_t bitmap_offset = (size_t)hdr->bitmap_offset;
     size_t bitmap_bytes = (size_t)hdr->num_arrays * sizeof(OptbinlogBitmap);
     if (range_within(bitmap_offset, bitmap_bytes, map_size) != 0) return -1;
-    if ((size_t)hdr->eventtag_offset < bitmap_offset + bitmap_bytes) return -1;
-    if ((size_t)hdr->eventtag_offset >= map_size) return -1;
+
+    size_t tag_offset = (size_t)hdr->eventtag_offset;
+    size_t tag_bytes = (size_t)hdr->tag_count * sizeof(OptbinlogEventTag);
+    if (range_within(tag_offset, tag_bytes, map_size) != 0) return -1;
+    if (tag_offset < bitmap_offset + bitmap_bytes) return -1;
     return 0;
 }
 
@@ -204,11 +302,11 @@ static void* map_file(const char* path, size_t size, int create, int* out_fd) {
     return addr;
 }
 
-static size_t sharedmem_size_get(int num_arrays, int num_eles, int array_lens_total) {
-    size_t sharedmem = 4;
+static size_t sharedmem_size_get(int num_arrays, int tag_count, int num_eles) {
+    size_t sharedmem = 0;
     sharedmem += sizeof(OptbinlogSharedTag);
     sharedmem += (size_t)num_arrays * sizeof(OptbinlogBitmap);
-    sharedmem += (size_t)array_lens_total * sizeof(OptbinlogEventTag);
+    sharedmem += (size_t)tag_count * sizeof(OptbinlogEventTag);
     sharedmem += (size_t)num_eles * sizeof(OptbinlogEventTagEle);
     return sharedmem;
 }
@@ -323,6 +421,65 @@ static uint32_t schema_hash_compute(const OptbinlogTagList* tags) {
     return h;
 }
 
+static int validate_tag_schema(const OptbinlogTagList* tags) {
+    if (!tags || tags->len == 0) return -1;
+    OptbinlogTagDef* ordered = calloc(tags->len, sizeof(OptbinlogTagDef));
+    if (!ordered) return -1;
+    memcpy(ordered, tags->items, tags->len * sizeof(OptbinlogTagDef));
+    qsort(ordered, tags->len, sizeof(OptbinlogTagDef), tag_cmp);
+
+    for (size_t i = 0; i < tags->len; i++) {
+        const OptbinlogTagDef* t = &ordered[i];
+        if (t->tag_id < 0 || t->tag_id > OPTBINLOG_TAG_ID_MAX) {
+            fprintf(stderr, "tag id out of supported range [0,%d]: %d\n", OPTBINLOG_TAG_ID_MAX, t->tag_id);
+            free(ordered);
+            return -1;
+        }
+        if (i > 0 && t->tag_id == ordered[i - 1].tag_id) {
+            fprintf(stderr, "duplicate tag id detected: %d\n", t->tag_id);
+            free(ordered);
+            return -1;
+        }
+        if (t->ele_num < 0 || t->ele_num > OPTBINLOG_TAG_ELE_NUM_MAX) {
+            fprintf(stderr, "tag %d has invalid element count: %d\n", t->tag_id, t->ele_num);
+            free(ordered);
+            return -1;
+        }
+        for (int e = 0; e < t->ele_num; e++) {
+            const OptbinlogTagEleDef* ele = &t->eles[e];
+            int type = type_code_from_char(ele->type_char);
+            if (type == 0) {
+                fprintf(stderr, "tag %d has unsupported element type '%c'\n", t->tag_id, ele->type_char);
+                free(ordered);
+                return -1;
+            }
+            if (ele->bits <= 0 || (ele->bits % 8) != 0) {
+                fprintf(stderr, "tag %d element %d has invalid bits=%d\n", t->tag_id, e, ele->bits);
+                free(ordered);
+                return -1;
+            }
+            int bytes = ele->bits / 8;
+            if (bytes <= 0 || bytes > OPTBINLOG_ELE_LEN_MAX_BYTES) {
+                fprintf(stderr, "tag %d element %d length out of range: %d bytes\n", t->tag_id, e, bytes);
+                free(ordered);
+                return -1;
+            }
+            if (type == 1 && bytes > (int)sizeof(uint64_t)) {
+                fprintf(stderr, "tag %d element %d integer bytes exceed uint64_t: %d\n", t->tag_id, e, bytes);
+                free(ordered);
+                return -1;
+            }
+            if (type == 2 && bytes != (int)sizeof(double)) {
+                fprintf(stderr, "tag %d element %d double bytes must be %zu, got %d\n", t->tag_id, e, sizeof(double), bytes);
+                free(ordered);
+                return -1;
+            }
+        }
+    }
+    free(ordered);
+    return 0;
+}
+
 int optbinlog_shared_init_from_dir(const char* eventlog_dir, const char* shared_path, int strict_perm) {
     optbinlog_shared_set_strict_perm(strict_perm);
     trace_event("init_start");
@@ -338,61 +495,61 @@ int optbinlog_shared_init_from_dir(const char* eventlog_dir, const char* shared_
         fprintf(stderr, "no tags found in %s\n", eventlog_dir);
         return -1;
     }
+    if (validate_tag_schema(&tags) != 0) {
+        optbinlog_taglist_free(&tags);
+        return -1;
+    }
 
     uint32_t schema_hash = schema_hash_compute(&tags);
+    int tag_count = (int)tags.len;
 
     int max_id = tags.items[0].tag_id;
-    for (size_t i = 1; i < tags.len; i++) {
-        if (tags.items[i].tag_id > max_id) max_id = tags.items[i].tag_id;
+    int total_eles = 0;
+    for (size_t i = 0; i < tags.len; i++) {
+        OptbinlogTagDef* tag = &tags.items[i];
+        if (tag->tag_id > max_id) max_id = tag->tag_id;
+        total_eles += tag->ele_num;
     }
     int num_arrays = max_id / OPTBINLOG_EVENT_TAG_ARRAY_LEN + 1;
 
     OptbinlogBitmap* bitmap = calloc((size_t)num_arrays, sizeof(OptbinlogBitmap));
-    int* array_max = calloc((size_t)num_arrays, sizeof(int));
-    if (!bitmap || !array_max) {
+    if (!bitmap) {
         fprintf(stderr, "OOM\n");
-        optbinlog_taglist_free(&tags);
         free(bitmap);
-        free(array_max);
+        optbinlog_taglist_free(&tags);
         return -1;
     }
 
-    int total_eles = 0;
     for (size_t i = 0; i < tags.len; i++) {
-        OptbinlogTagDef* tag = &tags.items[i];
-        int arr = tag->tag_id / OPTBINLOG_EVENT_TAG_ARRAY_LEN;
-        int idx = tag->tag_id % OPTBINLOG_EVENT_TAG_ARRAY_LEN;
+        int arr = tags.items[i].tag_id / OPTBINLOG_EVENT_TAG_ARRAY_LEN;
+        int idx = tags.items[i].tag_id % OPTBINLOG_EVENT_TAG_ARRAY_LEN;
         bitmap_set(&bitmap[arr], idx);
-        if (idx + 1 > array_max[arr]) array_max[arr] = idx + 1;
-        total_eles += tag->ele_num;
     }
 
-    int total_eventtags = 0;
-    for (int i = 0; i < num_arrays; i++) total_eventtags += array_max[i];
-
-    size_t total_size = sharedmem_size_get(num_arrays, total_eles, total_eventtags);
+    size_t total_size = sharedmem_size_get(num_arrays, tag_count, total_eles);
     if (total_size > UINT32_MAX) {
         fprintf(stderr, "shared layout too large\n");
-        optbinlog_taglist_free(&tags);
         free(bitmap);
-        free(array_max);
+        optbinlog_taglist_free(&tags);
         return -1;
     }
 
     int lock_fd = -1;
+    int lock_mode = 0;
+    char* lock_path = NULL;
     uint32_t wait_loops = 0;
     uint32_t wait_ms = 0;
-    if (acquire_init_lock(shared_path, &lock_fd, &wait_loops, &wait_ms) != 0) {
+    if (acquire_init_lock(shared_path, &lock_fd, &lock_mode, &lock_path, &wait_loops, &wait_ms) != 0) {
         fprintf(stderr, "acquire shared lock failed: %s\n", strerror(errno));
-        optbinlog_taglist_free(&tags);
         free(bitmap);
-        free(array_max);
+        optbinlog_taglist_free(&tags);
         return -1;
     }
 
     int rc = -1;
     int fd = -1;
     void* base = NULL;
+    OptbinlogTagDef* ordered = NULL;
 
     void* existing_base = NULL;
     size_t existing_size = 0;
@@ -436,6 +593,7 @@ int optbinlog_shared_init_from_dir(const char* eventlog_dir, const char* shared_
     memcpy(header->magic, OPTBINLOG_SHARED_MAGIC, 8);
     header->header_version = OPTBINLOG_SHARED_HEADER_VERSION;
     header->num_arrays = (unsigned int)num_arrays;
+    header->tag_count = (unsigned int)tag_count;
     header->schema_hash = schema_hash;
     header->generation = realtime_ns();
     header->total_size = (uint32_t)total_size;
@@ -449,46 +607,37 @@ int optbinlog_shared_init_from_dir(const char* eventlog_dir, const char* shared_
     header->bitmap_offset = (int)((uint8_t*)bitmap_out - (uint8_t*)base);
     memcpy(bitmap_out, bitmap, (size_t)num_arrays * sizeof(OptbinlogBitmap));
 
-    OptbinlogEventTag* eventtag_out = (OptbinlogEventTag*)optbinlog_malloc((size_t)total_eventtags * sizeof(OptbinlogEventTag));
+    OptbinlogEventTag* eventtag_out = (OptbinlogEventTag*)optbinlog_malloc((size_t)tag_count * sizeof(OptbinlogEventTag));
     if (!eventtag_out) {
         goto fail_cleanup_created;
     }
     header->eventtag_offset = (int)((uint8_t*)eventtag_out - (uint8_t*)base);
 
+    ordered = calloc(tags.len, sizeof(OptbinlogTagDef));
+    if (!ordered) {
+        fprintf(stderr, "OOM\n");
+        goto fail_cleanup_created;
+    }
+    memcpy(ordered, tags.items, tags.len * sizeof(OptbinlogTagDef));
+    qsort(ordered, tags.len, sizeof(OptbinlogTagDef), tag_cmp);
+
     int ele_cursor = OPTBINLOG_MALLOC_OFFSET;
-    for (int arr = 0; arr < num_arrays; arr++) {
-        int arr_base_index = 0;
-        for (int i = 0; i < arr; i++) arr_base_index += array_max[i];
-        for (int idx = 0; idx < array_max[arr]; idx++) {
-            int tag_id = arr * OPTBINLOG_EVENT_TAG_ARRAY_LEN + idx;
-            OptbinlogTagDef* found = NULL;
-            for (size_t t = 0; t < tags.len; t++) {
-                if (tags.items[t].tag_id == tag_id) {
-                    found = &tags.items[t];
-                    break;
-                }
-            }
+    for (int i = 0; i < tag_count; i++) {
+        const OptbinlogTagDef* t = &ordered[i];
+        OptbinlogEventTag* out = &eventtag_out[i];
+        out->tag_index = (unsigned int)t->tag_id;
+        out->tag_ele_num = (unsigned int)t->ele_num;
+        out->tag_ele_offset = ele_cursor;
+        memset(out->tag_name, 0, sizeof(out->tag_name));
+        strncpy(out->tag_name, t->name, sizeof(out->tag_name) - 1);
 
-            OptbinlogEventTag* out = &eventtag_out[arr_base_index + idx];
-            if (!found) {
-                memset(out, 0, sizeof(OptbinlogEventTag));
-                continue;
-            }
-
-            out->tag_index = (unsigned int)found->tag_id;
-            out->tag_ele_num = (unsigned int)found->ele_num;
-            out->tag_ele_offset = ele_cursor;
-            memset(out->tag_name, 0, sizeof(out->tag_name));
-            strncpy(out->tag_name, found->name, sizeof(out->tag_name) - 1);
-
-            for (int e = 0; e < found->ele_num; e++) {
-                OptbinlogEventTagEle* eo = (OptbinlogEventTagEle*)((uint8_t*)base + ele_cursor);
-                eo->type = (unsigned int)type_code_from_char(found->eles[e].type_char);
-                eo->len = (unsigned int)(found->eles[e].bits / 8);
-                memset(eo->name, 0, sizeof(eo->name));
-                strncpy(eo->name, found->eles[e].name, sizeof(eo->name) - 1);
-                ele_cursor += (int)sizeof(OptbinlogEventTagEle);
-            }
+        for (int e = 0; e < t->ele_num; e++) {
+            OptbinlogEventTagEle* eo = (OptbinlogEventTagEle*)((uint8_t*)base + ele_cursor);
+            eo->type = (unsigned int)type_code_from_char(t->eles[e].type_char);
+            eo->len = (unsigned int)(t->eles[e].bits / 8);
+            memset(eo->name, 0, sizeof(eo->name));
+            strncpy(eo->name, t->eles[e].name, sizeof(eo->name) - 1);
+            ele_cursor += (int)sizeof(OptbinlogEventTagEle);
         }
     }
 
@@ -503,6 +652,10 @@ int optbinlog_shared_init_from_dir(const char* eventlog_dir, const char* shared_
     goto out;
 
 fail_cleanup_created:
+    if (ordered) {
+        free(ordered);
+        ordered = NULL;
+    }
     if (base) {
         munmap(base, total_size);
         base = NULL;
@@ -515,33 +668,43 @@ fail_cleanup_created:
     goto out;
 
 out:
+    if (ordered) {
+        free(ordered);
+    }
     if (base) {
         munmap(base, total_size);
     }
     if (fd >= 0) {
         close(fd);
     }
-    release_init_lock(&lock_fd);
+    release_init_lock(&lock_fd, lock_mode, &lock_path);
     free(bitmap);
-    free(array_max);
     optbinlog_taglist_free(&tags);
     return rc;
 }
 
 OptbinlogEventTag* optbinlog_lookup_tag(void* base, OptbinlogSharedTag* header, int tag_id, int icnt) {
+    if (tag_id < 0) return NULL;
     int arr = tag_id / OPTBINLOG_EVENT_TAG_ARRAY_LEN;
     int idx = tag_id % OPTBINLOG_EVENT_TAG_ARRAY_LEN;
-    if (arr >= (int)header->num_arrays) return NULL;
+    if (idx < 0 || idx >= OPTBINLOG_EVENT_TAG_ARRAY_LEN) return NULL;
+    if (arr < 0 || arr >= (int)header->num_arrays) return NULL;
 
     OptbinlogBitmap* bitmap = (OptbinlogBitmap*)((uint8_t*)base + header->bitmap_offset);
     if (!optbinlog_bitmap_get(&bitmap[arr], idx)) return NULL;
 
     int arrayoffset = 0;
     for (int i = 0; i < arr; i++) {
-        arrayoffset += optbinlog_bitmap_get_max(&bitmap[i]);
+        arrayoffset += bitmap_count_ones(&bitmap[i]);
     }
+
+    int rank = bitmap_rank_inclusive(&bitmap[arr], idx);
+    if (rank <= 0) return NULL;
+    int slot = arrayoffset + rank - 1;
+    if (slot < 0 || slot >= (int)header->tag_count) return NULL;
+
     OptbinlogEventTag* tags = (OptbinlogEventTag*)((uint8_t*)base + header->eventtag_offset);
-    OptbinlogEventTag* tag = &tags[arrayoffset + idx];
+    OptbinlogEventTag* tag = &tags[slot];
     if (tag->tag_index != (unsigned int)tag_id) return NULL;
     if (icnt != -1 && (int)tag->tag_ele_num != icnt) return NULL;
     return tag;

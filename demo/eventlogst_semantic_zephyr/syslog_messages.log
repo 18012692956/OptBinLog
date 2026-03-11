@@ -1,0 +1,5 @@
+# zephyr deferred-like message object semantics
+zlog seq=2001 code=88 temp_x10=266 source=uart0 lvl=3 dropped=0
+zlog seq=2002 code=89 temp_x10=264 source=i2c1 lvl=2 dropped=1
+zlog seq=2003 code=90 temp_x10=269 source=spi2 lvl=4 dropped=0
+zlog seq=2004 code=91 temp_x10=271 source=uart0 lvl=3 dropped=0

@@ -3,6 +3,8 @@
   "parallel": true,
   "max_workers": 10,
   "start_sync_delay_s": 10,
+  "init_shared_path": "/Users/sky/Documents/optbinlog_shared/shared_eventtag.bin",
+  "init_eventlog_dir": "/Users/sky/Documents/graduation design/demo/eventlogst",
   "nodes": [
     {
       "name": "dev-01",

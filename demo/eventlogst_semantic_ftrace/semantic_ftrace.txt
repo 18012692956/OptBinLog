@@ -1,0 +1,1 @@
+1500 ftrace_aligned (cpu|L|16),(pid|L|32),(event|S|256),(state|S|128),(delta_us|L|32)

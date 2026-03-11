@@ -1,0 +1,5 @@
+# ftrace-style plain event semantics
+sched_switch cpu=0 pid=1201 event=irq_handler_entry state=running delta_us=12
+sched_switch cpu=1 pid=1202 event=irq_handler_exit state=sleeping delta_us=7
+sched_switch cpu=0 pid=1203 event=workqueue_execute_start state=running delta_us=31
+sched_switch cpu=1 pid=1204 event=workqueue_execute_end state=runnable delta_us=29

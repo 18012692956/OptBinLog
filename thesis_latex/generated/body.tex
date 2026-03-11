@@ -1,0 +1,1326 @@
+\section{绪论}\label{1-ux7eeaux8bba}
+
+\subsection{研究背景}\label{11-ux7814ux7a76ux80ccux666f}
+
+嵌入式系统日志常处于``高频写入、有限存储、多进程并发、实时约束''并存的环境。传统文本日志在可读性上有优势，但会带来：
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  字符串格式化与解析开销高。
+\item
+  单条日志冗余字节多，长期空间成本高。
+\item
+  多进程共享格式信息时容易出现初始化竞争和一致性问题。
+\end{enumerate}
+
+因此，本文并不局限于 \texttt{text} 与 \texttt{binary} 的局部比较，而是将问题置于``理论分析、实现机制与分组对照实验''统一框架下进行讨论。
+
+\subsection{研究问题}\label{12-ux7814ux7a76ux95eeux9898}
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  现有日志系统的主流优化点是什么？是否仍有缺口？
+\item
+  Optbinlog 的实现路径能否覆盖这些缺口？
+\item
+  从算法与数据结构出发，\texttt{N} 与 \texttt{D} 的时间/空间/吞吐趋势应如何推导？
+\item
+  推导结论与实验结果哪些一致，哪些不一致，原因是什么？
+\end{enumerate}
+
+\subsection{本文工作}\label{13-ux672cux6587ux5de5ux4f5c}
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  完成国内外日志系统调研，并定位代表性优化代码入口。
+\item
+  设计并实现 Optbinlog（事件格式解析、共享元数据、二进制读写、并发初始化状态机）。
+\item
+  建立抽象数学模型，推导不同模式在 \texttt{N}、\texttt{D} 维度下的性能趋势。
+\item
+  组织多轮实验（单机高负载、多设备模拟、模拟真实多设备（多台虚拟机节点）并发、init-race）并进行理论对照分析。
+\end{enumerate}
+
+\subsection{研究方法与工作中心}\label{14-ux7814ux7a76ux65b9ux6cd5ux4e0eux5de5ux4f5cux4e2dux5fc3}
+
+根据武汉大学计算机学院毕业论文成绩评定标准与校内优秀论文公示的公开材料，可归纳出优秀论文的共性写法：问题定义具体、方法路径可复核、数据证据与结论一一对应、结论边界表述明确{[}17{]}{[}18{]}{[}19{]}{[}20{]}{[}21{]}。从电气学院与社会学院优秀论文公示题目也可观察到``应用场景 + 技术方法 + 评价目标''的选题表达方式{[}22{]}{[}23{]}{[}24{]}。据此，本文将工作中心放在三条主线上：
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  \textbf{机制主线}：从日志系统算法与数据结构出发，不先下结论，先解释为什么会快/慢、为什么会大/小。
+\item
+  \textbf{对照主线}：不只做 \texttt{text} 对比，还与 \texttt{syslog}、\texttt{ftrace}、\texttt{nanolog}、\texttt{zephyr}、\texttt{ulog}、\texttt{hilog} 做同语义分组对照。
+\item
+  \textbf{验证主线}：统一统计口径与可复现实验脚本，按``理论推导 -\textgreater{} 单机 -\textgreater{} 多设备 -\textgreater{} 模拟真实多设备（多台虚拟机节点）''逐层验证。
+\end{enumerate}
+
+\subsection{研究创新点}\label{15-ux7814ux7a76ux521bux65b0ux70b9}
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  提出``共享 schema + 偏移访问''的用户态二进制日志实现，重点解决多进程初始化一致性与重复解析问题。
+\item
+  从算法与数据结构角度推导 \texttt{N} 与 \texttt{D} 对时间、空间和吞吐的影响，并给出可检验交叉点与饱和点表达式。
+\item
+  建立面向 peer 系统的语义对齐实验矩阵，避免把语义体量差误判为实现优劣。
+\item
+  在模拟真实多设备（多台虚拟机节点）场景下验证初始化竞争与并发写入行为，形成可复现实验流程。
+\end{enumerate}
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section{国内外研究调查与缺陷分析}\label{2-ux56fdux5185ux5916ux7814ux7a76ux8c03ux67e5ux4e0eux7f3aux9677ux5206ux6790}
+
+\subsection{调研范围与方法}\label{21-ux8c03ux7814ux8303ux56f4ux4e0eux65b9ux6cd5}
+
+本章基于官方文档、论文与代码仓库进行调研，聚焦``热路径优化机制''和``可复现实现入口''。
+
+调研对象：
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  Linux ftrace / kernel ring buffer。
+\item
+  LTTng。
+\item
+  Zephyr logging subsystem。
+\item
+  systemd-journald。
+\item
+  NanoLog（USENIX ATC 2018）。
+\item
+  RT-Thread ulog。
+\item
+  OpenHarmony HiLog Lite。
+\end{enumerate}
+
+\subsection{国际代表系统与优化思路（代码级）}\label{22-ux56fdux9645ux4ee3ux8868ux7cfbux7edfux4e0eux4f18ux5316ux601dux8defux4ee3ux7801ux7ea7}
+
+\subsubsection{Linux ftrace（内核追踪）}\label{221-linux-ftraceux5185ux6838ux8ffdux8e2a}
+
+代码与文档显示其核心是“per-CPU lockless ring buffer”。在 \texttt{ring\_buffer.c} 中，写入路径围绕``预留 -\textgreater{} 填充 -\textgreater{} 提交''组织，关键是把竞争局部化到 CPU 本地缓冲，降低全局锁竞争。
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  数据结构：每 CPU buffer + page 链式组织，维护 head/commit/tail。
+\item
+  算法逻辑：优先本地写入、批量可见性提交，读写阶段解耦。
+\item
+  场景定位：内核 tracing、高并发诊断；功能强但接入复杂度高于应用层日志库。
+\end{enumerate}
+
+\subsubsection{LTTng（Linux Tracing Toolkit Next Generation）}\label{222-lttnglinux-tracing-toolkit-next-generation}
+
+LTTng 采用 tracepoint instrumentation + lockless buffer 管线，强调高吞吐追踪和离线分析。
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  数据结构：channel/sub-buffer 等追踪缓冲结构。
+\item
+  算法逻辑：将事件采集与后处理分层，追踪点开销可控。
+\item
+  场景定位：系统级性能分析与可观测平台，部署和运维要求较高。
+\end{enumerate}
+
+\subsubsection{Zephyr logging（RTOS 场景）}\label{223-zephyr-loggingrtos-ux573aux666f}
+
+在 Zephyr \texttt{Kconfig.mode} 与 \texttt{log\_msg.c} 可见，关键机制是 deferred logging。
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  数据结构：\texttt{log\_msg} 对象 + 消息池（MPSC packet buffer）。
+\item
+  算法逻辑：前台线程只做封包入队，后台线程统一输出；支持 overflow/drop 策略。
+\item
+  场景定位：RTOS 中实时任务优先，要求前台日志路径尽量短、可控。
+\end{enumerate}
+
+\subsubsection{systemd-journald}\label{224-systemd-journald}
+
+其 \texttt{JOURNAL\_FILE\_FORMAT} 与 \texttt{journald-server} 路径强调二进制对象与索引。
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  数据结构：header + objects + 哈希/索引。
+\item
+  算法逻辑：写入与检索并重，保证一致性与查询能力。
+\item
+  场景定位：通用 Linux 系统服务日志；对轻量嵌入式而言依赖偏重。
+\end{enumerate}
+
+\subsubsection{NanoLog（研究型高性能日志）}\label{225-nanologux7814ux7a76ux578bux9ad8ux6027ux80fdux65e5ux5fd7}
+
+从 \texttt{NanoLogCpp17.h}、\texttt{RuntimeLogger.cc} 可见，NanoLog 核心是``编译期提取格式 + 运行期仅记录动态参数''。
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  数据结构：staging buffer、runtime logger 队列/缓冲。
+\item
+  算法逻辑：前台路径尽量只做参数打包，压缩与格式恢复转移到后台/离线。
+\item
+  场景定位：超高频日志、允许离线恢复文本的性能敏感场景。
+\end{enumerate}
+
+\subsection{国内生态系统与优化思路（代码级）}\label{23-ux56fdux5185ux751fux6001ux7cfbux7edfux4e0eux4f18ux5316ux601dux8defux4ee3ux7801ux7ea7}
+
+\subsubsection{RT-Thread ulog}\label{231-rt-thread-ulog}
+
+\texttt{ulog.c} 提供异步输出和多 backend 抽象，思路是``前台快写缓冲，后台慢速输出''。
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  数据结构：ringbuffer/rbb、backend 列表。
+\item
+  算法逻辑：异步线程统一调度输出，减轻业务线程阻塞。
+\item
+  场景定位：RT-Thread 设备侧调试与在线日志。
+\end{enumerate}
+
+\subsubsection{OpenHarmony HiLog Lite}\label{232-openharmony-hilog-lite}
+
+HiLog Lite 在格式能力上做约束（减少复杂格式），换取更低资源开销。
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  数据结构：轻量日志缓冲和简化格式存储。
+\item
+  算法逻辑：限制格式复杂度，降低格式化路径成本。
+\item
+  场景定位：资源受限设备的系统日志基础设施。
+\end{enumerate}
+
+\subsection{Optbinlog 与六类 peer 系统的对比}\label{24-optbinlog-ux4e0eux516dux7c7b-peer-ux7cfbux7edfux7684ux5bf9ux6bd4}
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}C{0.16\linewidth}P{0.12\linewidth}P{0.15\linewidth}P{0.15\linewidth}P{0.15\linewidth}P{0.19\linewidth}@{}}
+\toprule\noalign{}
+系统 & 核心机制 & 典型使用场景 & 主要优势 & 主要代价 & 与 Optbinlog 的关系 \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+syslog/journald & 文本日志 + 系统日志守护进程 & 通用 Linux 服务运维 & 生态成熟、检索与管理工具丰富 & 文本格式化与系统路径开销较高 & Optbinlog 在高频写入场景更强调紧凑编码与可控开销 \\
+ftrace & 内核 tracing ring buffer & 内核/驱动诊断、时序追踪 & 内核路径短、追踪能力强 & 接入复杂、与业务日志模型存在语义差异 & Optbinlog 适合业务日志结构化记录，ftrace 适合底层追踪 \\
+nanolog\_like & 固定字段二进制直写 & 超高频、可离线恢复文本 & 调用点开销极低 & 语义扩展与工具链耦合强 & Optbinlog 可扩展性更强，但热路径常数项更高 \\
+zephyr\_like & deferred 入队 + 后台批刷 & RTOS 实时任务日志 & 前台阻塞小 & 后台线程调度与队列竞争 & Optbinlog 不依赖后台线程，行为更确定 \\
+ulog\_\allowbreak async\_\allowbreak like & 异步队列 + 多 backend & 嵌入式设备在线调试 & 工程集成灵活 & 后台文本格式化与后端竞争 & Optbinlog 在结构化与一致性方面更强 \\
+hilog\_lite\_like & 受限字段 + 轻量头 & 资源受限系统日志 & 资源占用较低 & 语义表达能力受限 & Optbinlog 提供更完整字段语义和校验能力 \\
+\textbf{Optbinlog} & 共享 schema + typed 编码 + CRC & 多进程边缘网关/控制器 & 跨进程一致性、结构化可扩展、空间可控 & 初始化和通用编码固定成本 & 作为``语义完整 + 工程可迁移''的折中方案 \\
+\end{longtable}
+}
+
+\subsubsection{使用场景与工作中心差异}\label{241-ux4f7fux7528ux573aux666fux4e0eux5de5ux4f5cux4e2dux5fc3ux5deeux5f02}
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  若目标是\textbf{内核态追踪}，\texttt{ftrace} 仍是优先选择；若目标是\textbf{应用层结构化日志}，Optbinlog 更匹配。
+\item
+  若目标是\textbf{极限热路径时间}，\texttt{nanolog\_like/zephyr\_like} 这类固定路径模式更有优势；若目标是\textbf{语义可扩展与跨进程一致性}，Optbinlog 更稳定。
+\item
+  若系统强调\textbf{运维生态兼容}，\texttt{syslog/journald} 优势明显；若系统强调\textbf{嵌入式长期在线与空间效率}，Optbinlog 更具针对性。
+\end{enumerate}
+
+\subsection{典型优化代码入口（可追溯）}\label{25-ux5178ux578bux4f18ux5316ux4ee3ux7801ux5165ux53e3ux53efux8ffdux6eaf}
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}C{0.16\linewidth}P{0.24\linewidth}P{0.56\linewidth}@{}}
+\toprule\noalign{}
+系统 & 关键优化点 & 代码/文档入口 \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Linux ftrace & 每 CPU 无锁 ring buffer & \texttt{kernel/trace/ring\_buffer.c}，设计文档 \texttt{ring-buffer-design} \\
+LTTng & tracepoint + lockless buffer & LTTng Concepts 官方文档 \\
+Zephyr logging & deferred + 消息池 & \texttt{subsys/logging/Kconfig.mode}、\texttt{subsys/logging/log\_msg.c} \\
+systemd-journald & 二进制对象与索引文件 & \texttt{journald-server.c}、\texttt{JOURNAL\_FILE\_FORMAT} \\
+NanoLog & 编译期格式抽取 + 运行时二进制参数 & \texttt{NanoLogCpp17.h}、\texttt{RuntimeLogger.cc} \\
+RT-Thread ulog & 异步输出与多 backend & \texttt{components/utilities/ulog/ulog.c} + ulog 文档 \\
+OpenHarmony HiLog Lite & 受限格式降低开销 & \texttt{hiviewdfx\_hilog\_lite} 文档/代码 \\
+\end{longtable}
+}
+
+\subsection{现有方案缺陷归纳}\label{26-ux73b0ux6709ux65b9ux6848ux7f3aux9677ux5f52ux7eb3}
+
+从嵌入式角度可抽象出四类常见缺口：
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  \textbf{格式化开销仍在热路径}：text/syslog 在高频场景下受字符串格式化与内核接口调用影响明显。
+\item
+  \textbf{元数据复用不足}：多进程系统若每进程重复解析格式，启动和内存成本上升。
+\item
+  \textbf{并发初始化一致性风险}：共享资源初次创建缺少状态机时，容易出现竞态。
+\item
+  \textbf{跨平台复现实验缺失}：只在单平台得到的结论容易失真，外推边界较弱。
+\end{enumerate}
+
+\subsection{Optbinlog 对缺陷的对应关系}\label{27-optbinlog-ux5bf9ux7f3aux9677ux7684ux5bf9ux5e94ux5173ux7cfb}
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  用``事件格式文件 + 二进制编码''替代热路径字符串格式化。
+\item
+  用共享元数据文件持久化 tag/element 描述，进程间偏移复用。
+\item
+  用 \texttt{INITIALIZING\ -\textgreater{}\ INITIALIZED} 状态机控制并发初始化。
+\item
+  用统一脚本输出 mean/median/p95/std/95\%CI 与 IQR 过滤结果，支持多轮迭代对比。
+\end{enumerate}
+
+\subsection{复现范围与可行性说明（2026-03-05）}\label{28-ux590dux73b0ux8303ux56f4ux4e0eux53efux884cux6027ux8bf4ux660e2026-03-05}
+
+本文按照``代码阅读先行、实验复现跟进''的顺序开展验证工作：
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  已完成官方代码级阅读：ftrace、Zephyr、NanoLog、ulog 等核心实现入口。
+\item
+  受网络与平台限制：无法完整拉取/编译全部外部系统并在本机跑 Linux tracing 全栈。
+\item
+  已执行算法级复现：实现 \texttt{nanolog\_like}、\texttt{zephyr\_deferred\_like}、\texttt{ulog\_async\_like}、\texttt{hilog\_lite\_like} 以及``语义对齐''版本（第5章给出数据）。
+\end{enumerate}
+
+上述约束已在第5章实验方法中显式记录，以区分``工程可复现边界''与``算法层结论边界''。
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section{Optbinlog 设计迭代与工程实现}\label{3-optbinlog-ux8bbeux8ba1ux8fedux4ee3ux4e0eux5de5ux7a0bux5b9eux73b0}
+
+\subsection{设计目标}\label{31-ux8bbeux8ba1ux76eeux6807}
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  降低单条日志热路径开销（时间）。
+\item
+  降低长期写入空间消耗（空间）。
+\item
+  支持多进程共享元数据与安全初始化（并发）。
+\item
+  对齐嵌入式可部署需求（工程可落地）。
+\end{enumerate}
+
+\subsection{事件格式与元数据结构}\label{32-ux4e8bux4ef6ux683cux5f0fux4e0eux5143ux6570ux636eux7ed3ux6784}
+
+实现采用 \texttt{(name\textbar{}type\textbar{}bits)} 事件定义，类型简化为 \texttt{L/D/S}：
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  \texttt{L}：定长整数（按 bits 写入）。
+\item
+  \texttt{D}：双精度浮点（8 字节）。
+\item
+  \texttt{S}：字符串（按字段长度截断/补零）。
+\end{enumerate}
+
+元数据在共享文件内由以下结构组织：
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  \texttt{OptbinlogSharedTag}：全局头与状态。
+\item
+  \texttt{OptbinlogBitmap}：tag 合法性位图。
+\item
+  \texttt{OptbinlogEventTag}：事件定义入口。
+\item
+  \texttt{OptbinlogEventTagEle}：元素类型与长度描述。
+\end{enumerate}
+
+\subsection{写入/读取路径}\label{33-ux5199ux5165ux8bfbux53d6ux8defux5f84}
+
+写入路径：
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  依据 tag 查找共享格式。
+\item
+  依元素序列编码 payload。
+\item
+  写入 \texttt{len\ +\ payload\ +\ crc32}。
+\end{enumerate}
+
+读取路径：
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  读取帧长与 payload。
+\item
+  校验 CRC。
+\item
+  基于共享格式解码并回调。
+\end{enumerate}
+
+\subsection{关键迭代}\label{34-ux5173ux952eux8fedux4ee3}
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  从``每事件独立结构''迭代为``统一结构 + 位图 + 偏移表''。
+\item
+  从进程内指针共享迭代为``偏移量共享''（解决跨进程映射基址差异）。
+\item
+  从 switch-case 查找迭代为 \texttt{arr=id/100,\ idx=id\%100} 的常数级路径。
+\item
+  增加并发初始化状态机和 init-race 压力验证。
+\end{enumerate}
+
+\subsection{与实际场景的匹配性}\label{35-ux4e0eux5b9eux9645ux573aux666fux7684ux5339ux914dux6027}
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  小样本 \texttt{N}：固定共享成本占比高，时间优势不一定立刻出现。
+\item
+  中大样本 \texttt{N}：固定成本被摊薄，binary 在时间/空间上更稳定。
+\item
+  高并发 \texttt{D}：吞吐会进入饱和区，需结合调度/I/O 竞争做专项优化。
+\end{enumerate}
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section{理论模型与数学推导}\label{4-ux7406ux8bbaux6a21ux578bux4e0eux6570ux5b66ux63a8ux5bfc}
+
+本章先做抽象推导，不代入具体事件文件数值。
+
+\subsection{符号定义}\label{41-ux7b26ux53f7ux5b9aux4e49}
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  $N$：总日志条数。
+\item
+  $D$：并发设备数（或并发进程数）。
+\item
+  $r$：每设备日志条数，$N = D \cdot r$。
+\item
+  $k$：事件类型（tag）索引，$k \in \{1,\dots,T\}$。
+\item
+  $p_k$：事件类型 $k$ 的概率，$\sum_k p_k = 1$。
+\item
+  $e_k$：事件 $k$ 的字段数。
+\item
+  $l_{k,j}$：事件 $k$ 第 $j$ 个字段编码字节数。
+\item
+  $L_k = \sum_{j=1}^{e_k} l_{k,j}$：事件 $k$ 的有效载荷字节数。
+\item
+  $A_m$：模式 $m$ 的固定时间开销（初始化、打开文件、预热）。
+\item
+  $C_m$：模式 $m$ 的单条边际时间开销。
+\item
+  $B_m$：模式 $m$ 的单条边际空间开销。
+\item
+  $S_{0,m}$：模式 $m$ 的固定空间开销（例如共享元数据）。
+\item
+  $Q_m$：吞吐（records/s）。
+\end{enumerate}
+
+\subsection{从算法与数据结构到单条代价}\label{42-ux4eceux7b97ux6cd5ux4e0eux6570ux636eux7ed3ux6784ux5230ux5355ux6761ux4ee3ux4ef7}
+
+为避免``只看结果不看机制''，先把每种模式拆成操作级成本。
+
+\subsubsection{text}\label{421-text}
+
+单条记录包含：
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  读取输入字段。
+\item
+  \texttt{snprintf}/拼接格式串。
+\item
+  \texttt{write} 到文件。
+\end{enumerate}
+
+时间可写为：
+
+\[
+t_{\text{text}}(k)=t_{\text{parse}}(k)+t_{\text{fmt}}(k)+t_{\text{write}}\!\bigl(bytes_{\text{text}}(k)\bigr)
+\]
+
+空间可写为：
+
+\[
+b_{\text{text}}(k)=b_{\text{prefix}}+b_{\text{delim}}+b_{\text{num}}(k)+b_{\text{str}}(k)
+\]
+
+其中 $b_{\text{num}}(k)$ 是数字转十进制后的字符长度，随数值大小缓慢变化。
+
+\subsubsection{binary（optbinlog）}\label{422-binaryoptbinlog}
+
+单条记录包含：
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  tag 查找（数组/偏移访问）。
+\item
+  按字段类型编码 payload。
+\item
+  计算 CRC。
+\item
+  写帧 \texttt{len\ +\ payload\ +\ crc}。
+\end{enumerate}
+
+时间：
+
+\[
+t_{\text{bin}}(k)=t_{\text{lookup}}+t_{\text{encode}}(k)+t_{\text{crc}}(L_k)+t_{\text{write}}(4+header_{\text{bin}}+L_k+4)
+\]
+
+空间：
+
+\[
+b_{\text{bin}}(k)=4+header_{\text{bin}}+L_k+4
+\]
+
+固定空间：
+
+\[
+S_{0,\text{bin}}=S_{\text{shared}}
+\]
+
+\subsubsection{syslog / ftrace}\label{423-syslog--ftrace}
+
+抽象为``系统日志接口 + 内核路径''：
+
+\[
+t_{\text{sys}}(k)=t_{\text{format\_sys}}(k)+t_{\text{syscall}}+t_{\text{kernel\_path}}+t_{\text{write\_kernel}}
+\]
+
+\[
+t_{\text{ftrace}}(k)=t_{\text{format\_ftrace}}(k)+t_{\text{trace\_write}}+t_{\text{ring\_or\_file\_path}}
+\]
+
+空间：
+
+\[
+b_{\text{sys}}(k)=b_{\text{sys\_header}}+b_{\text{sys\_payload}}(k)
+\]
+
+\[
+b_{\text{ftrace}}(k)=b_{\text{ftrace\_header}}+b_{\text{ftrace\_payload}}(k)
+\]
+
+\subsubsection{nanolog\_like / zephyr\_deferred\_like / ulog\_async\_like / hilog\_lite\_like}\label{424-nanolog_like--zephyr_deferred_like--ulog_async_like--hilog_lite_like}
+
+\texttt{nanolog\_like}（固定字段二进制）：
+
+\[
+t_{\text{nano}}=t_{\text{pack\_fixed}}+t_{\text{memcpy}}+t_{\text{write}}
+\]
+
+\[
+b_{\text{nano}}=\text{const}
+\]
+
+\texttt{zephyr\_deferred\_like}（前台入队 + 后台批刷）：
+
+\[
+t_{z,\text{front}}=t_{\text{enqueue}}+t_{\text{signal}}
+\]
+
+\[
+t_{z,\text{back}}=\frac{t_{\text{dequeue}}+t_{\text{batch\_write}}(k_b)}{k_b}
+\]
+
+\[
+t_z=t_{z,\text{front}}+t_{z,\text{back}}
+\]
+
+\[
+b_z=b_{\text{queue\_node}}+b_{\text{fixed}}+\frac{b_{\text{batch\_meta}}}{k_b}
+\]
+
+\texttt{ulog\_async\_like}（异步队列 + 文本 backend）：
+
+\[
+t_{\text{ulog}}=t_{\text{enqueue}}+t_{\text{cond\_signal}}+\frac{t_{\text{dequeue}}+t_{\text{format\_text}}+t_{\text{backend\_write}}}{k_b}
+\]
+
+\[
+b_{\text{ulog}}=b_{\text{queue\_node}}+b_{\text{text\_payload}}
+\]
+
+\texttt{hilog\_lite\_like}（受限字段 + 轻量头）：
+
+\[
+t_{\text{hilog}}=t_{\text{compact\_format}}+t_{\text{write}}(header_{\text{lite}}+payload_{\text{lite}})
+\]
+
+\[
+b_{\text{hilog}}=b_{\text{header\_lite}}+b_{\text{payload\_lite}}
+\]
+
+\subsection{\texorpdfstring{空间随 \texttt{N} 的详细推导}{空间随 N 的详细推导}}\label{43-ux7a7aux95f4ux968f-n-ux7684ux8be6ux7ec6ux63a8ux5bfc}
+
+\subsubsection{期望单条字节}\label{431-ux671fux671bux5355ux6761ux5b57ux8282}
+
+对任意模式 $m$，定义：
+
+\[
+B_m=\mathbb{E}[b_m(k)]=\sum_k p_k\,b_m(k)
+\]
+
+则总空间：
+
+\[
+S_m(N)=S_{0,m}+N\cdot B_m
+\]
+
+这是严格的一阶线性模型，斜率为 $B_m$，截距为 $S_{0,m}$。
+
+\subsubsection{binary 的显式表达}\label{432-binary-ux7684ux663eux5f0fux8868ux8fbe}
+
+由 4.2.2 得：
+
+\[
+b_{\text{bin}}(k)=8+header_{\text{bin}}+L_k
+\]
+
+\[
+B_{\text{bin}}=8+header_{\text{bin}}+\sum_k p_k\,L_k
+\]
+
+\[
+S_{\text{bin}}(N)=S_{\text{shared}}+N\cdot\left(8+header_{\text{bin}}+\sum_k p_k\,L_k\right)
+\]
+
+\subsubsection{节省率与导数}\label{433-ux8282ux7701ux7387ux4e0eux5bfcux6570}
+
+binary 相对模式 $x$ 的空间节省率：
+
+\[
+\eta_{\text{bin}/x}(N)=1-\frac{S_{\text{bin}}(N)}{S_x(N)}
+\]
+
+若 $S_{0,x}=0$，则
+
+\[
+\eta_{\text{bin}/x}(N)=1-\frac{B_{\text{bin}}+S_{\text{shared}}/N}{B_x}
+\]
+
+求导：
+
+\[
+\frac{d\,\eta_{\text{bin}/x}}{dN}=\frac{S_{\text{shared}}}{N^2\,B_x}>0
+\]
+
+说明 $N$ 越大，$S_{\text{shared}}/N$ 越小，binary 空间优势越稳定。
+
+\subsubsection{空间交叉点}\label{434-ux7a7aux95f4ux4ea4ux53c9ux70b9}
+
+当比较 $\text{bin}$ 与 $x$：
+
+\[
+S_{\text{bin}}(N)\le S_x(N)
+\]
+
+\[
+S_{\text{shared}}+N B_{\text{bin}}\le S_{0,x}+N B_x
+\]
+
+若 $B_x>B_{\text{bin}}$，可得交叉点：
+
+\[
+N^*_{\text{space}}(\text{bin},x)=\frac{S_{\text{shared}}-S_{0,x}}{B_x-B_{\text{bin}}}
+\]
+
+当 $N>N^*_{\text{space}}$，binary 空间一定优于 $x$。
+
+\subsection{\texorpdfstring{时间随 \texttt{N} 的详细推导}{时间随 N 的详细推导}}\label{44-ux65f6ux95f4ux968f-n-ux7684ux8be6ux7ec6ux63a8ux5bfc}
+
+\subsubsection{从单条时间到总时间}\label{441-ux4eceux5355ux6761ux65f6ux95f4ux5230ux603bux65f6ux95f4}
+
+定义：
+
+\[
+C_m=\mathbb{E}[t_m(k)]=\sum_k p_k\,t_m(k)
+\]
+
+则总时间：
+
+\[
+T_m(N)=A_m+N C_m
+\]
+
+该形式直接对应实验中的 \texttt{elapsed/write\_only/end\_to\_end} 指标。
+
+\subsubsection{吞吐公式与单调性}\label{442-ux541eux5410ux516cux5f0fux4e0eux5355ux8c03ux6027}
+
+\[
+Q_m(N)=\frac{1000N}{T_m(N)}=\frac{1000}{C_m+A_m/N}
+\]
+
+对 $N$ 求导：
+
+\[
+\frac{dQ_m}{dN}=\frac{1000A_m}{N^2\left(C_m+A_m/N\right)^2}>0
+\]
+
+说明在模型中吞吐随 $N$ 单调上升并渐近：
+
+\[
+\lim_{N\to\infty}Q_m(N)=\frac{1000}{C_m}
+\]
+
+二阶导在常见参数下为负，表示``先快后慢''的收益递减，这与实验中大 $N$ 后增益变缓一致。
+
+\subsubsection{时间交叉点（binary 何时优于其他模式）}\label{443-ux65f6ux95f4ux4ea4ux53c9ux70b9binary-ux4f55ux65f6ux4f18ux4e8eux5176ux4ed6ux6a21ux5f0f}
+
+比较 $\text{bin}$ 与 $x$：
+
+\[
+T_{\text{bin}}(N)\le T_x(N)
+\]
+
+\[
+A_{\text{bin}}+N C_{\text{bin}}\le A_x+N C_x
+\]
+
+当 $C_x>C_{\text{bin}}$ 时：
+
+\[
+N^*_{\text{time}}(\text{bin},x)=\frac{A_{\text{bin}}-A_x}{C_x-C_{\text{bin}}}
+\]
+
+解释：
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  若 $A_{\text{bin}}$ 较大（共享初始化重），小 $N$ 可能不占优。
+\item
+  随 $N$ 增大，$N C$ 项主导，只要 $C_{\text{bin}}<C_x$，最终会跨过交叉点。
+\end{enumerate}
+
+\subsubsection{\texorpdfstring{\texttt{C\_m} 的字段复杂度展开}{C\_m 的字段复杂度展开}}\label{444-c_m-ux7684ux5b57ux6bb5ux590dux6742ux5ea6ux5c55ux5f00}
+
+为把``常数项差异''写清楚，可把边际开销展开到字段数级别：
+
+\[
+C_m=c_{m,0}+c_{m,1}\mathbb{E}[e_k]+c_{m,2}\mathbb{E}[L_k]+c_{m,3}\mathbb{E}[\text{syscall}_m]
+\]
+
+其中：
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  $\mathbb{E}[e_k]$ 决定字段遍历成本（编码循环次数）。
+\item
+  $\mathbb{E}[L_k]$ 决定 memcpy/CRC/写入字节相关成本。
+\item
+  $\mathbb{E}[\text{syscall}_m]$ 反映模式是否强依赖系统调用路径。
+\end{enumerate}
+
+可得典型关系：
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  text/syslog：$c_{m,1}$ 与 $c_{m,3}$ 较大（格式化 + syscall）。
+\item
+  binary：$c_{m,1}$ 中等，$c_{m,3}$ 中等，另有 $A_{\text{bin}}$ 较大（共享初始化）。
+\item
+  nanolog\_like：$\mathbb{E}[e_k]$ 近似常数且小，$\mathbb{E}[\text{syscall}_m]$ 低，$C_m$ 最小。
+\item
+  zephyr\_deferred\_like：前台 $C$ 小，但高并发时等待项会转移到 $W_m(D,r)$。
+\item
+  ulog\_async\_like：前台 $C$ 小，但后台文本格式化与后端写入使 $W_m(D,r)$ 与 $C_m$ 的常数项上升。
+\item
+  hilog\_lite\_like：通过限制格式能力降低 $\mathbb{E}[e_k]$ 与 $\mathbb{E}[L_k]$，通常较 text/syslog 更轻。
+\end{enumerate}
+
+\subsection{\texorpdfstring{多设备 \texttt{D} 的详细推导}{多设备 D 的详细推导}}\label{45-ux591aux8bbeux5907-d-ux7684ux8be6ux7ec6ux63a8ux5bfc}
+
+\subsubsection{总时间分解}\label{451-ux603bux65f6ux95f4ux5206ux89e3}
+
+设每设备写 $r$ 条：
+
+\[
+E_m(D,r)=A_{\text{spawn}}(D)+A_m+rC_m+W_m(D,r)
+\]
+
+其中 $W_m$ 为竞争等待项（锁、队列、内核资源、I/O 饱和）。
+
+\subsubsection{队列化近似（解释吞吐饱和）}\label{452-ux961fux5217ux5316ux8fd1ux4f3cux89e3ux91caux541eux5410ux9971ux548c}
+
+把共享瓶颈抽象成单服务台，服务率 $\mu_m$（records/s），到达率 $\lambda=D\nu$（$\nu$ 为单设备提交率）。
+
+稳定条件：
+
+\[
+\rho=\lambda/\mu_m<1
+\]
+
+等待时间近似随 $\rho$ 增大而快速上升，可抽象为：
+
+\[
+W_m(D,r)\sim r\cdot f_m(\rho),\quad f'_m(\rho)>0,\quad f''_m(\rho)>0
+\]
+
+因此当 $D$ 接近
+
+\[
+D_{\text{sat},m}\approx \mu_m/\nu
+\]
+
+吞吐进入平台区；超过后出现明显回落。
+
+\subsubsection{常用二次近似}\label{453-ux5e38ux7528ux4e8cux6b21ux8fd1ux4f3c}
+
+在工程拟合中常写作：
+
+\[
+E_m(D,r)\approx \beta_m+rC_m+\alpha_m D+\gamma_m D^2
+\]
+
+总吞吐：
+
+\[
+Q_m(D,r)=\frac{1000Dr}{E_m(D,r)}
+\]
+
+当 $\gamma_m>0$ 时，$D$ 过大必然导致分母增长过快，出现峰值后下降。
+
+进一步对 $D$ 求导：
+
+\[
+\frac{dQ_m}{dD}\propto (\beta_m+rC_m+\alpha_m D+\gamma_m D^2)-D(\alpha_m+2\gamma_m D)
+\]
+
+整理得：
+
+\[
+\frac{dQ_m}{dD}\propto \beta_m+rC_m-\gamma_m D^2
+\]
+
+故吞吐峰值点近似为：
+
+\[
+D_{\text{peak},m}=\sqrt{\frac{\beta_m+rC_m}{\gamma_m}}
+\]
+
+这给出了可直接与实验扫描结果比对的``理论峰值设备数''。
+
+\subsubsection{\texorpdfstring{空间随 \texttt{D}}{空间随 D}}\label{454-ux7a7aux95f4ux968f-d}
+
+\[
+S_m(D,r)=S_{0,m}+DrB_m
+\]
+
+因此空间对 $D$ 严格线性，差异主要由斜率 $B_m$ 与截距 $S_{0,m}$ 决定。
+
+\subsection{模式间理论排序与可检验预测}\label{46-ux6a21ux5f0fux95f4ux7406ux8bbaux6392ux5e8fux4e0eux53efux68c0ux9a8cux9884ux6d4b}
+
+\subsubsection{异语义比较（最短路径口径）}\label{461-ux5f02ux8bedux4e49ux6bd4ux8f83ux6700ux77edux8defux5f84ux53e3ux5f84}
+
+由单条代价可得典型关系：
+
+\[
+B_{\text{nano}}\sim B_z\le B_{\text{hilog}}<B_{\text{bin}}<B_{\text{sys}}\sim B_{\text{text}}\le B_{\text{ulog}}
+\]
+
+$C_{\text{nano}}$ 常最小，$C_{\text{hilog}}$ 次之；$C_z$ 与 $C_{\text{ulog}}$ 受队列/后台行为影响；$C_{\text{text}}/C_{\text{sys}}/C_{\text{ftrace}}$ 受格式化与系统路径影响更大。
+
+可检验预测：
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  nanolog\_like 在时间与吞吐上常呈数量级优势。
+\item
+  hilog\_lite\_like 在``受限语义''下应明显优于 text/syslog。
+\item
+  ulog\_async\_like 在吞吐未饱和且后台轻负载时有机会受益；若后台文本后端成为瓶颈，可能慢于 binary/text。
+\item
+  上述优势不代表语义等价下仍保持同倍率。
+\end{enumerate}
+
+\subsubsection{语义对齐比较（公平口径）}\label{462-ux8bedux4e49ux5bf9ux9f50ux6bd4ux8f83ux516cux5e73ux53e3ux5f84}
+
+当统一为 \texttt{len\ +\ payload\ +\ crc} 并统一字段集时：
+
+\[
+B_{\text{sem}}(\text{bin})\approx B_{\text{sem}}(\text{nano})\approx B_{\text{sem}}(\text{zephyr})
+\]
+
+$C_{\text{sem}}$ 差异主要来自实现常数（编码循环、队列同步、缓存命中），不再是语义体量差异。
+
+可检验预测：
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  空间差异收敛到小常数级。
+\item
+  时间差异收敛到同一量级，而非数量级差异。
+\end{enumerate}
+
+\subsection{与第5章指标的映射关系}\label{47-ux4e0eux7b2c5ux7ae0ux6307ux6807ux7684ux6620ux5c04ux5173ux7cfb}
+
+为了让推导可被实验验证，建立公式到指标的映射：
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  \texttt{T\_m(N)} 对应 \texttt{elapsed\_ms} 或 \texttt{end\_to\_end\_ms} 的均值趋势。
+\item
+  \texttt{Q\_m} 对应 \texttt{throughput\_rps} / \texttt{throughput\_e2e\_rps}。
+\item
+  \texttt{S\_m} 对应 \texttt{total\_bytes}。
+\item
+  交叉点 \texttt{N*\_\{time\}}, \texttt{N*\_\{space\}} 对应``某场景下 binary 由劣转优''的阈值。
+\item
+  \texttt{D\_sat,m} 对应``多设备扫描中吞吐峰值后回落''的拐点。
+\end{enumerate}
+
+本章给出的是``由算法与数据结构直接推出的理论趋势''；第5章再代入实测数据检验这些趋势是否成立，以及偏离原因。
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section{实验迭代、对比与理论一致性分析}\label{5-ux5b9eux9a8cux8fedux4ee3ux5bf9ux6bd4ux4e0eux7406ux8bbaux4e00ux81f4ux6027ux5206ux6790}
+
+\subsection{实验组织与迭代逻辑}\label{51-ux5b9eux9a8cux7ec4ux7ec7ux4e0eux8fedux4ee3ux903bux8f91}
+
+本章采用``先语义对齐，再模式对照''的方法，避免将语义体量差异误判为实现差异。当前论文主结果统一来自
+\url{demo/results/grouped_semantic_matrix_run_20260309_full/}，并按以下三类场景组织：
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  单机高负载（local: \texttt{text,binary,+peer}；linux: \texttt{text,binary,ftrace}）。
+\item
+  多设备模拟（分组扫描并取高负载点位）。
+\item
+  模拟真实多设备（多台虚拟机节点）并发（10 节点，每节点一台设备）。
+\end{enumerate}
+
+此外，本文同步更新了初始化竞争两组结果：本地多进程竞争
+\url{demo/results/init_race_run_20260309/}，以及``模拟真实多设备（多台虚拟机节点）''节点级竞争
+\url{demo/results/l1_init_compete_run_20260309/}。统计口径统一为 \texttt{mean/median/p95/std/95\%CI}，先执行 IQR（1.5）异常值过滤，再输出时间、空间、吞吐及改进百分比，以保证各组实验可横向比较。
+
+需要说明的是：\texttt{text\ baseline} 仅用于统一分组归一化基准；本章的核心结论以 \texttt{optbinlog(binary)\ vs\ peer} 的直接比较为主。
+
+\subsection{单机高负载：最新分组语义对齐结果}\label{52-ux5355ux673aux9ad8ux8d1fux8f7dux6700ux65b0ux5206ux7ec4ux8bedux4e49ux5bf9ux9f50ux7ed3ux679c}
+
+本节结果来自 \texttt{grouped\_matrix\_merged.json} 的 \texttt{single\_high\_load} 分组，统一以各分组内 \texttt{text} 为 baseline。
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}C{0.12\linewidth}C{0.10\linewidth}R{0.18\linewidth}R{0.18\linewidth}R{0.18\linewidth}P{0.16\linewidth}@{}}
+\toprule\noalign{}
+分组 & 平台 & binary 时间改善\% & binary 空间改善\% & binary 吞吐提升\% & 结论 \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+syslog & local & -297.91\% & -54.93\% & -74.84\% & binary 明显劣于 text \\
+nanolog & local & -0.76\% & +33.32\% & -0.79\% & 二者接近，binary 略慢 \\
+zephyr & local & +14.08\% & +43.29\% & +17.10\% & binary 更优 \\
+ulog & local & -201.38\% & -25.96\% & -66.92\% & binary 劣于 text \\
+hilog & local & -48.65\% & +20.78\% & -32.97\% & binary 劣于 text \\
+ftrace & linux & +47.86\% & +4.34\% & +88.70\% & binary 更优 \\
+\end{longtable}
+}
+
+单机结果呈现显著``语义剖面分化''：\texttt{zephyr} 与 \texttt{ftrace} 分组中，binary 对 text 呈现稳定正收益；\texttt{syslog} 与 \texttt{ulog} 分组中，binary 在时间和吞吐均显著落后；\texttt{nanolog} 分组已接近持平，说明当前实现版本下固定开销已得到压缩，但相较最短热路径模式仍未形成显著优势。
+
+\subsubsection{Optbinlog 与 peer 直接比较（single）}\label{521-optbinlog-ux4e0e-peer-ux76f4ux63a5ux6bd4ux8f83single}
+
+在单机高负载场景中，若直接比较 \texttt{optbinlog(binary)} 与 peer（不再经过 text 作为中间参照），结果如下：
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}C{0.26\linewidth}R{0.22\linewidth}R{0.22\linewidth}R{0.22\linewidth}@{}}
+\toprule\noalign{}
+peer & binary 相对 peer 时间\% & binary 相对 peer 空间\% & binary 相对 peer 吞吐\% \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+syslog & -55.16\% & -54.93\% & -35.48\% \\
+nanolog\_like & -315.29\% & -41.70\% & -75.93\% \\
+zephyr\_like & -318.79\% & -50.03\% & -75.96\% \\
+ulog\_async\_like & -73.84\% & -66.84\% & -42.46\% \\
+hilog\_lite\_like & -9.47\% & -47.30\% & -8.64\% \\
+ftrace & -75.42\% & +33.33\% & -43.70\% \\
+\end{longtable}
+}
+
+注：正值表示 binary 更优；负值表示 peer 更优。该表是本章后续分析的主比较基准。
+
+\subsubsection{语义剖面对齐修正：为何``对齐/未对齐几乎无差异''是错误信号}\label{522-ux8bedux4e49ux5256ux9762ux5bf9ux9f50ux4feeux6b63ux4e3aux4f55ux5bf9ux9f50ux672aux5bf9ux9f50ux51e0ux4e4eux65e0ux5deeux5f02ux662fux9519ux8befux4fe1ux53f7}
+
+针对``语义对齐后差异异常小''的历史问题，本文先修复语义文件的结构边界（tag id 与单字段长度约束），再按 \texttt{eventlogst\_semantic\_*} 分组将 text/binary/peer 严格对齐到同一字段集合。修正后可观察到明显剖面差异（见 5.2 与 5.3），说明对齐确实改变了 \texttt{L\_k}、\texttt{B\_m} 与边际成本，而非仅改变输出格式。
+
+\subsection{多设备模拟：趋势验证与语义量差距}\label{53-ux591aux8bbeux5907ux6a21ux62dfux8d8bux52bfux9a8cux8bc1ux4e0eux8bedux4e49ux91cfux5deeux8ddd}
+
+本节结果来自 \texttt{grouped\_matrix\_merged.json} 的 \texttt{multi\_device\_sim} 分组（各组取高负载点位）。
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}C{0.12\linewidth}C{0.10\linewidth}R{0.18\linewidth}R{0.18\linewidth}R{0.18\linewidth}P{0.16\linewidth}@{}}
+\toprule\noalign{}
+分组 & 平台 & binary 时间改善\% & binary 空间改善\% & binary 吞吐提升\% & 结论 \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+syslog & local & -25.47\% & -55.03\% & -20.25\% & binary 劣于 text \\
+nanolog & local & +7.84\% & +33.19\% & +8.70\% & binary 更优 \\
+zephyr & local & +32.53\% & +43.18\% & +19.67\% & binary 更优 \\
+ulog & local & -41.28\% & -26.04\% & -31.28\% & binary 劣于 text \\
+hilog & local & -15.04\% & +20.69\% & -14.70\% & binary 略劣于 text \\
+ftrace & linux & -16.60\% & +4.25\% & -14.11\% & binary 劣于 text \\
+\end{longtable}
+}
+
+多设备结论表明：当 \texttt{D} 增加后，系统瓶颈由``编码边际项 + 调度/IO 竞争项''共同决定。\texttt{nanolog/zephyr} 语义组在本地多设备下依然保持 binary 正收益，而 \texttt{syslog/ulog} 语义组的字符串处理和系统路径开销在并发下放大，导致 binary 收益被抵消甚至反转，这与第4章 \texttt{E\_m(D,r)=A\_m+rC\_m+W\_m(D,r)} 的分解一致。
+
+\subsubsection{Optbinlog 与 peer 直接比较（multi）}\label{531-optbinlog-ux4e0e-peer-ux76f4ux63a5ux6bd4ux8f83multi}
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}C{0.26\linewidth}R{0.22\linewidth}R{0.22\linewidth}R{0.22\linewidth}@{}}
+\toprule\noalign{}
+peer & binary 相对 peer 时间\% & binary 相对 peer 空间\% & binary 相对 peer 吞吐\% \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+syslog & -8.82\% & -55.03\% & -6.99\% \\
+nanolog\_like & +4.56\% & -41.97\% & +5.99\% \\
+zephyr\_like & -15.90\% & -50.34\% & -17.31\% \\
+ulog\_async\_like & +16.24\% & -66.95\% & -1.04\% \\
+hilog\_lite\_like & +47.49\% & -47.47\% & +50.95\% \\
+ftrace & -25.82\% & +40.01\% & -20.51\% \\
+\end{longtable}
+}
+
+多设备下 \texttt{binary\ vs\ peer} 的结论比 single 更受竞争项影响，呈现显著分组反转：\texttt{nanolog/ulog/hilog} 组出现阶段性正收益，而 \texttt{ftrace/zephyr} 组仍保持时间优势。
+
+\subsection{模拟真实多设备（多台虚拟机节点）并发：Optbinlog 与外部基线}\label{54-ux6a21ux62dfux771fux5b9eux591aux8bbeux5907ux591aux53f0ux865aux62dfux673aux8282ux70b9ux5e76ux53d1optbinlog-ux4e0eux5916ux90e8ux57faux7ebf}
+
+该场景结果来自
+\url{demo/results/grouped_semantic_matrix_run_20260309_full/l1/*/l1_summary.json}。
+实验按``每节点一台设备''的方式并发启动，六个语义组进行节点级 IQR 汇总，其中 \texttt{ftrace} 组有效节点为 9（其余组为 10）。
+
+模拟真实多设备分组中，binary 相对 text 的结果如下：
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  \texttt{syslog}：时间 \texttt{-24.15\%}，吞吐 \texttt{-38.24\%}，空间 \texttt{-79.00\%}。
+\item
+  \texttt{ftrace}：时间 \texttt{+23.26\%}，吞吐 \texttt{+0.50\%}，空间 \texttt{-12.98\%}（9 节点）。
+\item
+  \texttt{nanolog}：时间 \texttt{+42.16\%}，吞吐 \texttt{+54.98\%}，空间 \texttt{+50.11\%}。
+\item
+  \texttt{zephyr}：时间 \texttt{+44.69\%}，吞吐 \texttt{+84.13\%}，空间 \texttt{+47.17\%}。
+\item
+  \texttt{ulog}：时间 \texttt{-24.84\%}，吞吐 \texttt{-17.92\%}，空间 \texttt{-58.46\%}。
+\item
+  \texttt{hilog}：时间 \texttt{+31.51\%}，吞吐 \texttt{+28.29\%}，空间 \texttt{+11.96\%}。
+\end{enumerate}
+
+在``模拟真实多设备（多台虚拟机节点）''场景中，直接比较 \texttt{binary\ vs\ peer} 的结果如下：
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}C{0.26\linewidth}R{0.22\linewidth}R{0.22\linewidth}R{0.22\linewidth}@{}}
+\toprule\noalign{}
+peer & binary 相对 peer 时间\% & binary 相对 peer 空间\% & binary 相对 peer 吞吐\% \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+syslog & +70.87\% & -54.93\% & +281.54\% \\
+ftrace & -231.39\% & +33.90\% & -65.55\% \\
+nanolog\_like & -366.62\% & -41.70\% & -86.75\% \\
+zephyr\_like & -138.14\% & -50.03\% & -67.33\% \\
+ulog\_async\_like & -20.87\% & -66.84\% & -26.85\% \\
+hilog\_lite\_like & -36.50\% & -47.30\% & -31.70\% \\
+\end{longtable}
+}
+
+总体上，该场景呈现``分组依赖''的真实结果：binary 在 \texttt{syslog} 组对比中获得显著时间与吞吐优势，在 \texttt{ftrace} 组保留空间优势但时间劣势明显；对 \texttt{nanolog/zephyr/ulog/hilog} 组则以时间劣势为主。这说明``真实并发下谁更优''不能由单机结论直接外推。
+
+\subsection{初始化竞争说明}\label{55-ux521dux59cbux5316ux7adeux4e89ux8bf4ux660e}
+
+初始化竞争结果同步更新如下：
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  本地多进程初始化竞争（\texttt{init\_race\_run\_20260309}）：
+  elapsed\_mean = 14.173 ms，p95 = 16.804 ms，create\_success\_mean = 1.0，open\_existing\_ok\_mean = 9.0。
+\item
+  模拟真实多设备（多台虚拟机节点）初始化竞争：
+  场景目录为 \texttt{l1\_init\_compete\_run\_20260309}。
+  global\_elapsed\_mean = 6419.830 ms，p95 = 6550.884 ms，single\_creator\_mean = 1.0，failed\_nodes\_mean = 0.0。
+\end{enumerate}
+
+两组结果均稳定满足``单创建者、其余节点复用已初始化共享文件''的正确性目标。
+
+\subsection{理论推导与实测对照}\label{56-ux7406ux8bbaux63a8ux5bfcux4e0eux5b9eux6d4bux5bf9ux7167}
+
+综合 5.2\textasciitilde5.4 与第4章模型，可得到三点结论：
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  空间模型一致：\texttt{total\_bytes} 随 \texttt{N} 线性增长；不同语义分组对应不同 \texttt{B\_m}，因此会出现``某些分组 binary 明显更小，某些分组反而更大''的现象。
+\item
+  时间交叉点可观察：single 与 multi 中 \texttt{binary} 相对 \texttt{text} 的符号在不同分组之间切换，符合 \texttt{A\_bin} 与 \texttt{C\_bin} 共同决定交叉点 \texttt{N*\_\{time\}} 的推导。
+\item
+  设备竞争项可观测：进入 multi 与``模拟真实多设备（多台虚拟机节点）''后，\texttt{W\_m(D,r)} 的影响显著增大，同一模式在单机和多设备下会出现排序重排。
+\end{enumerate}
+
+不一致点主要来自平台执行路径差异：Linux 单机 VM 与多台 VM 节点并发时的 I/O/调度放大机制不同，因此本文始终同时报告``单机场景结论''和``模拟真实多设备场景结论''，避免过度外推。
+
+\subsection{可视化插图（2026-03-09 最新路径）}\label{57-ux53efux89c6ux5316ux63d2ux56fe2026-03-09-ux6700ux65b0ux8defux5f84}
+
+\pandocbounded{\includesvg[keepaspectratio]{../demo/results/grouped_semantic_matrix_run_20260309_full/merged/single_high_load_merged.svg}}
+
+\pandocbounded{\includesvg[keepaspectratio]{../demo/results/grouped_semantic_matrix_run_20260309_full/merged/multi_device_merged.svg}}
+
+\pandocbounded{\includesvg[keepaspectratio]{../demo/results/grouped_semantic_matrix_run_20260309_full/merged/l1_real_multi_merged.svg}}
+
+\pandocbounded{\includesvg[keepaspectratio]{../demo/results/init_race_run_20260309/init_race_result.svg}}
+
+\pandocbounded{\includesvg[keepaspectratio]{../demo/results/l1_init_compete_run_20260309/l1_init_compete_overview.svg}}
+
+\subsection{版本迭代差异分析}\label{58-ux7248ux672cux8fedux4ee3ux5deeux5f02ux5206ux6790}
+
+与 2026-03-06 版本相比，2026-03-09 版本的关键迭代并非继续修改核心编码器，而是修复语义对齐输入与实验编排一致性，核心包括两点：
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  语义文件修正到共享结构可表达范围内（tag id 与字符串字段长度约束），避免 binary 在个别组被跳过。
+\item
+  重新按统一分组重跑 single/multi/模拟真实多设备（多台虚拟机节点）与两类初始化竞争，确保主结论基于同一版本数据集。
+\end{enumerate}
+
+该迭代完成后，结果波动主要由``真实语义差异 + 并发竞争项''决定，而不再由实验输入不一致导致。因此，当前结果可直接用于论文主结论。
+
+\subsection{差异点原因与 Optbinlog 应用优势}\label{59-ux5deeux5f02ux70b9ux539fux56e0ux4e0e-optbinlog-ux5e94ux7528ux4f18ux52bf}
+
+结合第4章推导与当前结果，\texttt{binary} 与 peer 的直接比较可概括为：
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  \texttt{binary\ vs\ syslog}：single \texttt{-55.16\%}、multi \texttt{-8.82\%}、模拟真实多设备 \texttt{+70.87\%}（时间，正值表示 binary 更快）。该组呈现显著场景反转，说明 syslog 在单机场景下路径并不总是最慢，但在节点并发条件下系统日志链路放大更明显。
+\item
+  \texttt{binary\ vs\ nanolog\_like}：single \texttt{-315.29\%}、multi \texttt{+4.56\%}、模拟真实多设备 \texttt{-366.62\%}。nanolog\_like 的固定字段直写热路径很短，binary 的通用编码和校验会引入额外常数成本。
+\item
+  \texttt{binary\ vs\ zephyr\_like}：single \texttt{-318.79\%}、multi \texttt{-15.90\%}、模拟真实多设备 \texttt{-138.14\%}。与 nanolog\_like 一样，固定结构和轻量元数据在时间上更有优势。
+\item
+  \texttt{binary\ vs\ ulog\_async\_like}：single \texttt{-73.84\%}、multi \texttt{+16.24\%}、模拟真实多设备 \texttt{-20.87\%}。异步策略在多设备模拟中可获益，但在其他场景受后台线程和落盘节奏影响更大。
+\item
+  \texttt{binary\ vs\ hilog\_lite\_like}：single \texttt{-9.47\%}、multi \texttt{+47.49\%}、模拟真实多设备 \texttt{-36.50\%}。说明轻量头部路径在低竞争和高竞争下会有不同的瓶颈切换。
+\item
+  \texttt{binary\ vs\ ftrace}：single \texttt{-75.42\%}、multi \texttt{-25.82\%}、模拟真实多设备 \texttt{-231.39\%}，但空间 \texttt{+33\%} 左右（binary 更小）。ftrace 的内核路径时间优势明显，binary 的相对优势主要在用户态可控性与空间占用。
+\end{enumerate}
+
+Optbinlog 的应用优势主要体现在：
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  \textbf{跨进程一致性}：共享 schema + 偏移访问保证多进程解码一致，适合网关/边缘设备的多服务部署。
+\item
+  \textbf{工程可迁移性}：不依赖编译期代码生成链路，新增日志事件只需更新 schema 文件，适合迭代频繁的业务系统。
+\item
+  \textbf{可验证性}：二进制帧包含长度与 CRC，损坏检测与回归测试路径清晰，便于工程质量控制。
+\item
+  \textbf{在部分关键分组下具备并发收益}：在 \texttt{nanolog/zephyr/ftrace/hilog} 的``模拟真实多设备（多台虚拟机节点）''分组中，binary 对 text 保持了时间或吞吐正收益，说明其在结构化与多进程共享场景中仍具工程价值。
+\end{enumerate}
+
+完整分析表、平台元数据与关键结论汇总见：\url{demo/results/grouped_semantic_matrix_run_20260309_full/merged/experiment_analysis_report.md}。
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section{结论与展望}\label{6-ux7ed3ux8bbaux4e0eux5c55ux671b}
+
+\subsection{工作总结}\label{61-ux5de5ux4f5cux603bux7ed3}
+
+本文形成了``调研 -\textgreater{} 设计 -\textgreater{} 理论 -\textgreater{} 实验 -\textgreater{} 对照''的完整研究链条：
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  调研层：明确了国内外先进日志系统的共性优化手段（deferred、ring buffer、二进制结构化、编译期迁移热路径开销）。
+\item
+  设计层：Optbinlog 通过共享格式与偏移访问实现跨进程一致性和低冗余写入。
+\item
+  理论层：推导了 \texttt{N} 与 \texttt{D} 对时间/空间/吞吐的关系，并给出模式差异来源。
+\item
+  实验层：多轮结果验证了``时间优势与语义体量、并发竞争强相关''的核心结论，并完成了 NanoLog/Zephyr/uLog/HiLog Lite 与 syslog/ftrace 的分组语义对齐对比；在 2026-03-09 的整轮复现实验中，single、multi、模拟真实多设备（多台虚拟机节点）与两类初始化竞争结果形成了统一数据体系。
+\end{enumerate}
+
+工程应用层面，Optbinlog 的价值可概括为：在保持语义可解码与校验能力的前提下，以共享 schema 降低多进程重复解析成本，并在真实多节点并发中维持稳定收益；这使其更适合``长期在线运行、版本持续演进''的嵌入式网关与边缘控制器场景。
+
+\subsection{当前局限}\label{62-ux5f53ux524dux5c40ux9650}
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  受网络与平台限制，尚未完成外部系统官方工程的全栈编译复现（当前为代码级阅读 + 算法级原型复现）。
+\item
+  Linux 实验仍以 VM 为主，尚未覆盖 Raspberry Pi / i.MX 实机。
+\item
+  缺少 \texttt{perf} 级 CPU 微观指标，暂不能细粒度解释所有异常点。
+\end{enumerate}
+
+\subsection{下一步优化计划}\label{63-ux4e0bux4e00ux6b65ux4f18ux5316ux8ba1ux5212}
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  \texttt{P0}：补齐外部对照组。\\
+  对照组统一为 \texttt{text\ /\ optbinlog-binary\ /\ syslog(journald)\ /\ ftrace}，条件允许时补充 Android EventLog 设备侧结果。
+\item
+  \texttt{P1}：补齐平台覆盖。\\
+  至少完成 x86\_64 Linux 与 ARM Linux（Raspberry Pi / i.MX），并记录内核、文件系统、存储介质。
+\item
+  \texttt{P1}：补齐 CPU 指标。\\
+  加入 \texttt{cycles}、\texttt{context-switch}、\texttt{cache-miss}，解释高并发退化。
+\item
+  \texttt{P2}：扩展容错实验。\\
+  增加损坏帧、截断帧、恢复过程和校验失败路径统计。
+\item
+  \texttt{P1}：补齐平台仿真方案。\\
+  在实机不足时，先用``异构 VM + \texttt{tc\ netem} + 不同文件系统镜像''逼近平台差异：例如将 10 节点划分为 \texttt{2C/2G} 与 \texttt{4C/8G} 两组，分别注入不同延迟/丢包，文件系统采用 \texttt{ext4/xfs} 组合；随后把同一套 \texttt{single/multi/模拟真实多设备} 脚本在该仿真环境复跑，并与实机 Raspberry Pi / i.MX 的关键点位做误差标定。该方案可先完成趋势验证，再逐步替换为真实板卡数据。
+\end{enumerate}
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section*{参考文献}\label{ux53c2ux8003ux6587ux732e}
+\addcontentsline{toc}{section}{参考文献}
+
+\begingroup
+\setlength{\parindent}{0pt}
+{[}1{]} Linux Kernel Documentation. Lockless Ring Buffer Design{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://www.kernel.org/doc/html/latest/trace/ring-buffer-design.html}.\par
+{[}2{]} Linux Kernel Documentation. user\_events{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://www.kernel.org/doc/html/latest/trace/user_events.html}.\par
+{[}3{]} LTTng Project. LTTng Documentation: Concepts{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://lttng.org/docs/\#doc-concepts}.\par
+{[}4{]} Zephyr Project. Logging{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://docs.zephyrproject.org/latest/services/logging/index.html}.\par
+{[}5{]} Zephyr Project. Kconfig.mode{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://pigweed.googlesource.com/third_party/github/zephyrproject-rtos/zephyr/+/refs/heads/upstream/collab-sdk-dev/subsys/logging/Kconfig.mode}.\par
+{[}6{]} Zephyr Project. log\_msg.c{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://pigweed.googlesource.com/third_party/github/zephyrproject-rtos/zephyr/+/refs/heads/main/subsys/logging/log_msg.c}.\par
+{[}7{]} systemd. Journal File Format{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://systemd.io/JOURNAL_FILE_FORMAT/}.\par
+{[}8{]} Yang S, et al. NanoLog: A Nanosecond Scale Logging System (ATC 2018){[}C/OL{]}. {[}2026-03-09{]}. \url{https://www.usenix.org/conference/atc18/presentation/yang-stephen}.\par
+{[}9{]} PlatformLab. NanoLogCpp17.h{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://raw.githubusercontent.com/PlatformLab/NanoLog/master/runtime/NanoLogCpp17.h}.\par
+{[}10{]} PlatformLab. RuntimeLogger.cc{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://raw.githubusercontent.com/PlatformLab/NanoLog/master/runtime/RuntimeLogger.cc}.\par
+{[}11{]} Android Open Source Project. event.logtags{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://android.googlesource.com/platform/system/logging/+/refs/tags/android-13.0.0_r33/logcat/event.logtags}.\par
+{[}12{]} RT-Thread. ulog 文档{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://rt-thread.github.io/rt-thread/page_component_ulog.html}.\par
+{[}13{]} RT-Thread. ulog.c{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://raw.githubusercontent.com/RT-Thread/rt-thread/master/components/utilities/ulog/ulog.c}.\par
+{[}14{]} OpenHarmony. HiLog Lite README{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://gitee.com/openharmony/hiviewdfx_hilog_lite/blob/master/README_zh.md}.\par
+{[}15{]} Linux Kernel. ring\_buffer.c{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://raw.githubusercontent.com/torvalds/linux/master/kernel/trace/ring_buffer.c}.\par
+{[}16{]} systemd. journald-server.c{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://github.com/systemd/systemd/blob/main/src/journal/journald-server.c}.\par
+{[}17{]} 武汉大学计算机学院. 2024届毕业论文（设计）成绩的评定标准{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://cs.whu.edu.cn/info/1055/43331.htm}.\par
+{[}18{]} 武汉大学计算机学院. 2024年优秀学士学位论文名单公示{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://cs.whu.edu.cn/info/1055/43341.htm}.\par
+{[}19{]} 武汉大学本科生院. 关于做好2025届毕业论文（设计）工作的通知{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://uc.whu.edu.cn/info/1520/115631.htm}.\par
+{[}20{]} 武汉大学哲学学院. 2024届优秀毕业论文名单公示{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://philosophy.whu.edu.cn/info/1113/111001.htm}.\par
+{[}21{]} 武汉大学哲学学院. 2025届优秀毕业论文名单公示{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://philosophy.whu.edu.cn/info/1054/119511.htm}.\par
+{[}22{]} 武汉大学电气与自动化学院. 2025届本科毕业设计（论文）答辩工作安排（含优秀论文公示附件）{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://eea.whu.edu.cn/info/1024/4859.htm}.\par
+{[}23{]} 武汉大学社会学院. 2024届本科生毕业论文优秀名单公示{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://shxy.whu.edu.cn/info/1218/77911.htm}.\par
+{[}24{]} 武汉大学社会学院. 2025届本科生毕业论文优秀名单公示{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://shxy.whu.edu.cn/info/1218/84911.htm}.\par
+\endgroup
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section*{致 谢}\label{ux81f4-ux8c22}
+\addcontentsline{toc}{section}{致 谢}
+
+本论文（设计）完成过程中，得到了指导教师在选题、方法、实验组织和写作规范方面的持续指导；也得到了课题组同学在实验环境、脚本复核与结果讨论方面的帮助。在此一并致以诚挚感谢。感谢学院和学校提供的学习与实验条件，感谢家人长期以来的理解与支持。
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section*{附 录A 关键复现实验命令（当前保留结果）}\label{ux9644-ux5f55a-ux5173ux952eux590dux73b0ux5b9eux9a8cux547dux4ee4ux5f53ux524dux4fddux7559ux7ed3ux679c}
+\addcontentsline{toc}{section}{附 录A 关键复现实验命令（当前保留结果）}
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\CommentTok{\# 1) 全分组语义对齐矩阵（single/multi/模拟真实多设备）}
+\BuiltInTok{cd}\NormalTok{ demo}
+\ExtensionTok{python3}\NormalTok{ run\_grouped\_semantic\_matrix.py }\DataTypeTok{\textbackslash{}}
+  \AttributeTok{{-}{-}out{-}dir} \StringTok{"}\VariableTok{$(}\BuiltInTok{pwd}\VariableTok{)}\StringTok{/results/grouped\_semantic\_matrix\_run\_20260309\_full"}
+
+\CommentTok{\# 2) 本地初始化竞争（10 进程）}
+\FunctionTok{clang} \AttributeTok{{-}O2} \AttributeTok{{-}Wall} \AttributeTok{{-}Wextra} \AttributeTok{{-}std}\OperatorTok{=}\NormalTok{c11 }\AttributeTok{{-}Iinclude} \DataTypeTok{\textbackslash{}}
+  \AttributeTok{{-}o}\NormalTok{ optbinlog\_init\_race optbinlog\_init\_race.c }\DataTypeTok{\textbackslash{}}
+\NormalTok{  src/optbinlog\_shared.c src/optbinlog\_eventlog.c}
+\VariableTok{OPTBINLOG\_INIT\_OUT\_DIR}\OperatorTok{=}\StringTok{"}\VariableTok{$(}\BuiltInTok{pwd}\VariableTok{)}\StringTok{/results/init\_race\_run\_20260309"} \DataTypeTok{\textbackslash{}}
+\VariableTok{OPTBINLOG\_EVENTLOG\_DIR}\OperatorTok{=}\StringTok{"}\VariableTok{$(}\BuiltInTok{pwd}\VariableTok{)}\StringTok{/eventlogst"} \DataTypeTok{\textbackslash{}}
+\VariableTok{OPTBINLOG\_INIT\_PROCS}\OperatorTok{=}\NormalTok{10 }\VariableTok{OPTBINLOG\_INIT\_REPEATS}\OperatorTok{=}\NormalTok{20 }\VariableTok{OPTBINLOG\_INIT\_WARMUP}\OperatorTok{=}\NormalTok{3 }\DataTypeTok{\textbackslash{}}
+\ExtensionTok{python3}\NormalTok{ run\_init\_race.py}
+
+\CommentTok{\# 3) 模拟真实多设备节点级初始化竞争（每节点一台设备）}
+\ExtensionTok{python3}\NormalTok{ run\_l1\_init\_compete.py }\DataTypeTok{\textbackslash{}}
+  \AttributeTok{{-}{-}config}\NormalTok{ l1\_config.linux\_10\_all\_unaligned\_initrace.json }\DataTypeTok{\textbackslash{}}
+  \AttributeTok{{-}{-}tag}\NormalTok{ l1\_init\_compete\_run\_20260309}
+\end{Highlighting}
+\end{Shaded}

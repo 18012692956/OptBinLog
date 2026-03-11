@@ -1,0 +1,1 @@
+1100 nanolog_aligned (seq|L|32),(code|L|32),(temp_x10|L|32),(tag|L|16),(level|L|8)

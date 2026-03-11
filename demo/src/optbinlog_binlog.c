@@ -23,19 +23,27 @@ static uint64_t now_ns(void) {
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
-static uint32_t crc32_update(uint32_t crc, uint8_t b) {
-    crc ^= b;
-    for (int i = 0; i < 8; i++) {
-        uint32_t mask = (uint32_t)(-(int32_t)(crc & 1u));
-        crc = (crc >> 1) ^ (0xEDB88320u & mask);
+static uint32_t crc32_table[256];
+static int crc32_table_ready = 0;
+
+static void crc32_init_table(void) {
+    for (uint32_t i = 0; i < 256u; i++) {
+        uint32_t c = i;
+        for (int j = 0; j < 8; j++) {
+            c = (c & 1u) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+        }
+        crc32_table[i] = c;
     }
-    return crc;
+    crc32_table_ready = 1;
 }
 
 static uint32_t crc32_compute(const uint8_t* data, size_t len) {
+    if (!crc32_table_ready) {
+        crc32_init_table();
+    }
     uint32_t crc = 0xFFFFFFFFu;
     for (size_t i = 0; i < len; i++) {
-        crc = crc32_update(crc, data[i]);
+        crc = crc32_table[(crc ^ data[i]) & 0xFFu] ^ (crc >> 8);
     }
     return ~crc;
 }
@@ -59,6 +67,7 @@ static uint32_t read_le32(const uint8_t* src) {
 }
 
 static int build_tag_cache(void* base, OptbinlogSharedTag* header, OptbinlogTagCacheEntry** out_cache, int* out_len) {
+    if (!header || header->tag_count == 0 || header->num_arrays == 0) return -1;
     int total_ids = (int)header->num_arrays * OPTBINLOG_EVENT_TAG_ARRAY_LEN;
     OptbinlogTagCacheEntry* cache = calloc((size_t)total_ids, sizeof(OptbinlogTagCacheEntry));
     if (!cache) return -1;
@@ -68,11 +77,20 @@ static int build_tag_cache(void* base, OptbinlogSharedTag* header, OptbinlogTagC
 
     int prefix = 0;
     for (unsigned int arr = 0; arr < header->num_arrays; arr++) {
-        int arr_max = optbinlog_bitmap_get_max(&bitmap[arr]);
-        for (int idx = 0; idx < arr_max; idx++) {
-            int tag_id = (int)(arr * OPTBINLOG_EVENT_TAG_ARRAY_LEN + idx);
+        int local_slot = 0;
+        for (int idx = 0; idx < OPTBINLOG_EVENT_TAG_ARRAY_LEN; idx++) {
             if (!optbinlog_bitmap_get(&bitmap[arr], idx)) continue;
-            OptbinlogEventTag* tag = &tags[prefix + idx];
+            if (prefix + local_slot >= (int)header->tag_count) {
+                free(cache);
+                return -1;
+            }
+
+            int tag_id = (int)(arr * OPTBINLOG_EVENT_TAG_ARRAY_LEN + idx);
+            OptbinlogEventTag* tag = &tags[prefix + local_slot];
+            if ((int)tag->tag_index != tag_id) {
+                free(cache);
+                return -1;
+            }
             OptbinlogEventTagEle* eles = (OptbinlogEventTagEle*)((uint8_t*)base + tag->tag_ele_offset);
 
             int size = 8 + 2 + 1;
@@ -85,8 +103,13 @@ static int build_tag_cache(void* base, OptbinlogSharedTag* header, OptbinlogTagC
             cache[tag_id].eles = eles;
             cache[tag_id].ele_count = (int)tag->tag_ele_num;
             cache[tag_id].payload_size = size;
+            local_slot++;
         }
-        prefix += arr_max;
+        prefix += local_slot;
+    }
+    if (prefix != (int)header->tag_count) {
+        free(cache);
+        return -1;
     }
 
     *out_cache = cache;
@@ -105,6 +128,11 @@ static uint64_t read_uint_n(const uint8_t* data, int nbytes) {
 static int read_exact(FILE* fp, void* out, size_t n) {
     size_t got = fread(out, 1, n, fp);
     return got == n ? 0 : -1;
+}
+
+static int write_exact(FILE* fp, const void* data, size_t n) {
+    if (n == 0) return 0;
+    return fwrite(data, 1, n, fp) == n ? 0 : -1;
 }
 
 int optbinlog_binlog_write(const char* shared_path, const char* log_path, const OptbinlogRecord* records, size_t count) {
@@ -191,7 +219,15 @@ int optbinlog_binlog_write(const char* shared_path, const char* log_path, const 
         if (frame_size <= buf_cap) {
             if (buf_used + frame_size > buf_cap) {
                 uint64_t t4 = profile ? now_ns() : 0;
-                fwrite(buf, 1, buf_used, fp);
+                if (write_exact(fp, buf, buf_used) != 0) {
+                    fprintf(stderr, "write %s failed: %s\n", log_path, strerror(errno));
+                    free(buf);
+                    free(rec_buf);
+                    fclose(fp);
+                    free(cache);
+                    optbinlog_shared_close(base, map_size);
+                    return -1;
+                }
                 if (profile) t_write += now_ns() - t4;
                 buf_used = 0;
             }
@@ -294,7 +330,15 @@ int optbinlog_binlog_write(const char* shared_path, const char* log_path, const 
 
         if (frame_size > buf_cap) {
             uint64_t t3 = profile ? now_ns() : 0;
-            fwrite(dst, 1, frame_size, fp);
+            if (write_exact(fp, dst, frame_size) != 0) {
+                fprintf(stderr, "write %s failed: %s\n", log_path, strerror(errno));
+                free(buf);
+                free(rec_buf);
+                fclose(fp);
+                free(cache);
+                optbinlog_shared_close(base, map_size);
+                return -1;
+            }
             if (profile) t_write += now_ns() - t3;
         } else {
             buf_used += frame_size;
@@ -303,11 +347,26 @@ int optbinlog_binlog_write(const char* shared_path, const char* log_path, const 
 
     if (buf_used > 0) {
         uint64_t t5 = profile ? now_ns() : 0;
-        fwrite(buf, 1, buf_used, fp);
+        if (write_exact(fp, buf, buf_used) != 0) {
+            fprintf(stderr, "write %s failed: %s\n", log_path, strerror(errno));
+            free(buf);
+            free(rec_buf);
+            fclose(fp);
+            free(cache);
+            optbinlog_shared_close(base, map_size);
+            return -1;
+        }
         if (profile) t_write += now_ns() - t5;
     }
 
-    fclose(fp);
+    if (fclose(fp) != 0) {
+        fprintf(stderr, "close %s failed: %s\n", log_path, strerror(errno));
+        free(buf);
+        free(rec_buf);
+        free(cache);
+        optbinlog_shared_close(base, map_size);
+        return -1;
+    }
     free(buf);
     free(rec_buf);
     free(cache);

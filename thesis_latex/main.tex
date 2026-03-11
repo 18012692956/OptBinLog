@@ -1,0 +1,235 @@
+\documentclass[UTF8,a4paper,zihao=-4,fontset=none]{ctexart}
+
+\usepackage{geometry}
+\geometry{top=2.54cm,bottom=2.54cm,left=3.17cm,right=3.17cm}
+\usepackage{setspace}
+\usepackage{fontspec}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{caption}
+\usepackage{tocloft}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{mathtools}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{etoolbox}
+\PassOptionsToPackage{hyphens}{url}
+\usepackage{hyperref}
+\usepackage{framed}
+\usepackage{fancyvrb}
+\definecolor{shadecolor}{RGB}{248,248,248}
+\newenvironment{Shaded}{\begin{snugshade}}{\end{snugshade}}
+\DefineVerbatimEnvironment{Highlighting}{Verbatim}{commandchars=\\\{\}}
+\hypersetup{hidelinks}
+\Urlmuskip=0mu plus 2mu
+
+% Compatibility helpers for markdown/pandoc-generated snippets.
+\newcommand{\pandocbounded}[1]{#1}
+\newcommand{\includesvg}[2][]{%
+  \IfFileExists{#2.pdf}{%
+    \includegraphics[width=0.92\linewidth,#1]{#2.pdf}%
+  }{%
+    \fbox{\texttt{\detokenize{SVG: #2}}}%
+  }%
+}
+\newcommand{\AlertTok}[1]{#1}
+\newcommand{\AnnotationTok}[1]{#1}
+\newcommand{\AttributeTok}[1]{#1}
+\newcommand{\BaseNTok}[1]{#1}
+\newcommand{\BuiltInTok}[1]{#1}
+\newcommand{\CharTok}[1]{#1}
+\newcommand{\CommentTok}[1]{#1}
+\newcommand{\ConstantTok}[1]{#1}
+\newcommand{\ControlFlowTok}[1]{#1}
+\newcommand{\DataTypeTok}[1]{#1}
+\newcommand{\DecValTok}[1]{#1}
+\newcommand{\DocumentationTok}[1]{#1}
+\newcommand{\ErrorTok}[1]{#1}
+\newcommand{\ExtensionTok}[1]{#1}
+\newcommand{\FloatTok}[1]{#1}
+\newcommand{\FunctionTok}[1]{#1}
+\newcommand{\ImportTok}[1]{#1}
+\newcommand{\InformationTok}[1]{#1}
+\newcommand{\KeywordTok}[1]{#1}
+\newcommand{\NormalTok}[1]{#1}
+\newcommand{\OperatorTok}[1]{#1}
+\newcommand{\OtherTok}[1]{#1}
+\newcommand{\PreprocessorTok}[1]{#1}
+\newcommand{\RegionMarkerTok}[1]{#1}
+\newcommand{\SpecialCharTok}[1]{#1}
+\newcommand{\SpecialStringTok}[1]{#1}
+\newcommand{\StringTok}[1]{#1}
+\newcommand{\VariableTok}[1]{#1}
+\newcommand{\VerbatimStringTok}[1]{#1}
+\newcommand{\WarningTok}[1]{#1}
+
+\setmainfont{Times New Roman}
+\setCJKmainfont{Songti SC}
+\newCJKfontfamily\songti{Songti SC}
+\newCJKfontfamily\heiti{Heiti SC}
+\newCJKfontfamily\kai{STKaiti}
+\newfontfamily\tnr{Times New Roman}
+\DeclareCaptionFont{songti}{\songti}
+\DeclareCaptionFont{zihaowu}{\zihao{5}}
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+
+\setstretch{1.5}
+\setlength{\parindent}{2em}
+\setlength{\parskip}{0pt}
+\setlength{\emergencystretch}{3.5em}
+\setlength{\tabcolsep}{2.8pt}
+\renewcommand{\arraystretch}{1.12}
+\setlength\LTleft{0pt}
+\setlength\LTright{0pt}
+\allowdisplaybreaks
+\newcolumntype{P}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcolumntype{C}[1]{>{\centering\arraybackslash}p{#1}}
+\newcolumntype{R}[1]{>{\raggedleft\arraybackslash}p{#1}}
+\AtBeginEnvironment{longtable}{\small}
+
+\numberwithin{figure}{section}
+\numberwithin{table}{section}
+\numberwithin{equation}{section}
+\newcounter{none}
+
+\ctexset{
+  section={
+    name={,},
+    format=\centering\heiti\bfseries\zihao{-2},
+    number=\arabic{section},
+    beforeskip=1.2\baselineskip,
+    afterskip=0.8\baselineskip
+  },
+  subsection={
+    name={,},
+    format=\heiti\bfseries\zihao{4},
+    number=\thesection.\arabic{subsection},
+    beforeskip=0.8\baselineskip,
+    afterskip=0.4\baselineskip
+  },
+  subsubsection={
+    name={,},
+    format=\heiti\bfseries\zihao{-4},
+    number=\thesubsection.\arabic{subsubsection},
+    beforeskip=0.6\baselineskip,
+    afterskip=0.3\baselineskip
+  }
+}
+
+\captionsetup{
+  font={songti,zihaowu},
+  labelfont={songti,bf,zihaowu},
+  labelsep=space
+}
+
+\renewcommand{\contentsname}{目录}
+\setcounter{tocdepth}{2}
+\renewcommand{\cfttoctitlefont}{\hfill\heiti\bfseries\zihao{-2}}
+\renewcommand{\cftaftertoctitle}{\hfill}
+\renewcommand{\cftsecfont}{\songti\bfseries\zihao{-4}}
+\renewcommand{\cftsubsecfont}{\songti\zihao{-4}}
+\renewcommand{\cftsubsubsecfont}{\songti\zihao{-4}}
+\renewcommand{\cftsecpagefont}{\songti\zihao{-4}}
+\renewcommand{\cftsubsecpagefont}{\songti\zihao{-4}}
+\renewcommand{\cftsubsubsecpagefont}{\songti\zihao{-4}}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[C]{\songti\zihao{5} 武汉大学本科毕业论文（设计）}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0pt}
+\setlength{\headheight}{13pt}
+
+\graphicspath{{./}{../}}
+
+\newcommand{\thesistitle}{基于共享内存事件格式的嵌入式二进制日志系统设计与实现}
+\newcommand{\studentname}{邓泽宇}
+\newcommand{\studentid}{2022302111098}
+\newcommand{\majorname}{软件工程}
+\newcommand{\schoolname}{武汉大学}
+\newcommand{\advisorname}{（待填写）}
+\newcommand{\finishdate}{二〇二六年三月}
+
+\begin{document}
+\pagestyle{empty}
+
+% Cover
+\begin{titlepage}
+  \centering
+  \vspace*{1.8cm}
+  {\heiti\zihao{2} 本科毕业论文（设计）\par}
+  \vspace{2.5cm}
+  {\kai\zihao{1} \thesistitle\par}
+  \vspace{2.5cm}
+  {\songti\zihao{4}
+    姓\hspace{1.6em}名：\studentname\par
+    \vspace{0.7em}
+    学\hspace{1.6em}号：\studentid\par
+    \vspace{0.7em}
+    专\hspace{1.6em}业：\majorname\par
+    \vspace{0.7em}
+    学\hspace{1.6em}院：\schoolname\par
+    \vspace{0.7em}
+    指导教师：\advisorname\par
+  }
+  \vfill
+  {\songti\zihao{4} \finishdate\par}
+\end{titlepage}
+
+% Statement pages
+\clearpage
+\pagestyle{empty}
+\section*{\heiti\zihao{-2} 原创性声明}
+\songti\zihao{-4}
+本人郑重声明：所呈交的论文（设计），是本人在指导教师的指导下，严格按照学校和学院有关规定完成的。除文中已经标明引用的内容外，本论文（设计）不包含任何其他个人或集体已发表及撰写的研究成果。对本论文（设计）做出贡献的个人和集体，均已在文中以明确方式标明。本人承诺在论文（设计）工作过程中没有伪造数据等行为。若在本论文（设计）中有侵犯任何方面知识产权的行为，由本人承担相应的法律责任。
+
+\vspace{2.5em}
+\begin{center}
+作者签名：\underline{\hspace{7em}}\hspace{4em}指导教师签名：\underline{\hspace{7em}}\\[1.2em]
+日\hspace{1em}期：\underline{\hspace{10em}}
+\end{center}
+
+\vspace{2em}
+\section*{\heiti\zihao{-2} 版权使用授权书}
+\songti\zihao{-4}
+本人完全了解武汉大学有权保留并向有关部门或机构送交本论文（设计）的复印件和电子版，允许本论文（设计）被查阅和借阅。本人授权武汉大学将本论文的全部或部分内容编入有关数据库进行检索和传播，可以采用影印、缩印或扫描等复制手段保存和汇编本论文（设计）。
+
+\vspace{2.5em}
+\begin{center}
+作者签名：\underline{\hspace{7em}}\hspace{4em}指导教师签名：\underline{\hspace{7em}}\\[1.2em]
+日\hspace{1em}期：\underline{\hspace{10em}}
+\end{center}
+
+% Chinese abstract
+\clearpage
+\pagenumbering{Roman}
+\setcounter{page}{1}
+\pagestyle{fancy}
+\section*{\heiti\zihao{-2} 摘\hspace{1em}要}
+\addcontentsline{toc}{section}{摘要}
+\input{generated/cn_abstract.tex}
+\par\noindent\textbf{关键词：}\input{generated/keywords.tex}
+
+% English abstract
+\clearpage
+\section*{{\tnr\bfseries\zihao{-2} ABSTRACT}}
+\addcontentsline{toc}{section}{ABSTRACT}
+\input{generated/en_abstract.tex}
+\par\noindent{\tnr\bfseries Keywords: }\input{generated/keywords_en.tex}
+
+% TOC
+\clearpage
+\tableofcontents
+
+% Main body
+\clearpage
+\pagenumbering{arabic}
+\setcounter{page}{1}
+\input{generated/body.tex}
+
+\end{document}

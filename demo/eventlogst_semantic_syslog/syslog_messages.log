@@ -1,0 +1,5 @@
+# syslog-aligned textual semantics
+<14>Mar 06 12:30:01 edge01 app[1201]: seq=5001 code=301 temp=25.3 status=ok
+<13>Mar 06 12:30:02 edge01 app[1201]: seq=5002 code=302 temp=25.5 status=warn
+<11>Mar 06 12:30:03 edge02 sensor[2480]: seq=5003 code=411 temp=36.8 status=retry
+<10>Mar 06 12:30:04 edge02 sensor[2480]: seq=5004 code=412 temp=36.4 status=ok

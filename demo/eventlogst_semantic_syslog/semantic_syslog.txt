@@ -1,0 +1,1 @@
+1001 syslog_aligned (pri|L|8),(facility|L|8),(severity|L|8),(host|S|128),(app|S|128),(pid|L|32),(msg_a|S|256),(msg_b|S|256)

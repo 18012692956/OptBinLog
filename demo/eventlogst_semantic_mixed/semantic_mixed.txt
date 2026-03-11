@@ -1,0 +1,5 @@
+1600 mix_nano (seq|L|32),(code|L|32),(temp_x10|L|32),(tag|L|16),(level|L|8)
+1601 mix_zephyr (seq|L|32),(code|L|32),(temp_x10|L|32),(source_id|L|16),(level|L|8),(dropped|L|16)
+1602 mix_hilog (domain|L|16),(tag|L|16),(level|L|8),(seq|L|32),(msg|S|256)
+1603 mix_ulog (level|L|8),(module|S|128),(seq|L|32),(code|L|32),(msg_a|S|256),(msg_b|S|256)
+1604 mix_ftrace (cpu|L|16),(pid|L|32),(event|S|256),(state|S|128),(delta_us|L|32)

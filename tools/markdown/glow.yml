@@ -1,0 +1,7 @@
+style: dark
+local: true
+mouse: true
+all: false
+showLineNumbers: false
+preserveNewLines: true
+width: 110

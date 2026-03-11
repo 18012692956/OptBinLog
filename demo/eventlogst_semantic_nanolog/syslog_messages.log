@@ -1,0 +1,5 @@
+# nanolog-like compact semantics
+nlog seq=1001 code=120 temp_x10=253 tag=17 level=2
+nlog seq=1002 code=121 temp_x10=251 tag=17 level=3
+nlog seq=1003 code=122 temp_x10=249 tag=18 level=2
+nlog seq=1004 code=123 temp_x10=255 tag=18 level=4

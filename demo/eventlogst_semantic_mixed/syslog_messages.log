@@ -1,0 +1,4 @@
+mix seq=5001 code=120 level=3 msg="compact fixed fields path"
+mix seq=5002 code=330 level=4 msg="deferred queue object path"
+mix seq=5003 code=710 level=2 msg="text backend asynchronous path"
+mix seq=5004 code=905 level=5 msg="kernel trace style plain text path"
