@@ -33,3 +33,21 @@
 
 # macOS
 .DS_Store
+
+# Local reference material
+/武汉大学本科生毕业论文（设计）参考模板.pdf
+
+# Editor local state
+.obsidian/
+
+# LaTeX build artifacts
+/thesis_latex/*.aux
+/thesis_latex/*.log
+/thesis_latex/*.out
+/thesis_latex/*.toc
+/thesis_latex/missfont.log
+/thesis_latex/assets/*.aux
+/thesis_latex/assets/*.log
+/thesis_latex/assets/whu_wordmark.pdf
+/thesis_latex/assets/whu_wordmark.tex
+/thesis_latex/whu_wordmark.pdf

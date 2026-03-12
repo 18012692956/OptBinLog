@@ -42,10 +42,19 @@ typedef struct {
     uint16_t msg_len;
 } HiLogLiteHeader;
 
+#define GENERATED_STRING_SLOT 128u
+
+typedef struct {
+    OptbinlogTagList tags;
+    OptbinlogRecord* recs;
+    OptbinlogValue* values_pool;
+    char* string_pool;
+} GeneratedRecordSet;
+
 static void usage(const char* prog) {
     fprintf(stderr,
         "Usage:\n"
-        "  %s --mode text|csv|jsonl|binary|syslog|ftrace|nanolog_like|zephyr_like|zephyr_deferred_like|ulog_async_like|hilog_lite_like|nanolog_semantic_like|zephyr_deferred_semantic_like --eventlog-dir <dir> --out <file> --records N [--shared <file>] [--strict-perm]\n",
+        "  %s --mode text|text_semantic_like|csv|jsonl|binary|binary_crc32_legacy|binary_crc32c|binary_hotpath|binary_nocrc|binary_varstr|binary_crc32c_varstr|binary_nocrc_varstr|syslog|ftrace|nanolog_like|zephyr_like|zephyr_deferred_like|ulog_async_like|hilog_lite_like|nanolog_semantic_like|zephyr_deferred_semantic_like|ulog_semantic_like|hilog_semantic_like --eventlog-dir <dir> --out <file> --records N [--shared <file>] [--strict-perm]\n",
         prog
     );
 }
@@ -385,6 +394,237 @@ static void clear_ftrace_trace(const char* trace_read_path) {
     int fd = open(trace_read_path, O_WRONLY | O_TRUNC | O_CLOEXEC);
     if (fd < 0) return;
     close(fd);
+}
+
+static size_t ele_storage_bytes(const OptbinlogTagEleDef* ele) {
+    if (ele->type_char == 'D') return sizeof(double);
+    if (ele->type_char == 'S') {
+        if (ele->bits <= 0) return 16u;
+        return (size_t)ele->bits;
+    }
+    if (ele->bits <= 8) return 1u;
+    return (size_t)((ele->bits + 7) / 8);
+}
+
+static void generate_string_value(const OptbinlogTagDef* tag,
+                                  const OptbinlogTagEleDef* ele,
+                                  long i,
+                                  char* out,
+                                  size_t cap) {
+    static const char* hosts[] = {"edge01", "edge02", "edge03", "gateway01"};
+    static const char* apps[] = {"sensor", "logger", "power", "storage"};
+    static const char* modules[] = {"net", "storage", "sensor", "power"};
+    static const char* events[] = {"irq_handler_entry", "irq_handler_exit", "workqueue_start", "workqueue_end"};
+    static const char* states[] = {"running", "sleeping", "runnable", "waiting"};
+    static const char* sources[] = {"uart0", "i2c1", "spi2", "can0"};
+    static const char* statuses[] = {"ok", "warn", "retry", "drop"};
+    static const char* msgs[] = {
+        "socket timeout while reconnecting",
+        "flash erase latency exceeded threshold",
+        "imu sample window checksum mismatch",
+        "battery profile updated from bms",
+    };
+    const char* name = ele->name;
+    if (!out || cap == 0) return;
+
+    if (strstr(name, "host")) {
+        snprintf(out, cap, "%s", hosts[(size_t)(i % 4)]);
+    } else if (strstr(name, "app")) {
+        snprintf(out, cap, "%s", apps[(size_t)(i % 4)]);
+    } else if (strstr(name, "module")) {
+        snprintf(out, cap, "%s", modules[(size_t)(i % 4)]);
+    } else if (strstr(name, "event")) {
+        snprintf(out, cap, "%s", events[(size_t)(i % 4)]);
+    } else if (strstr(name, "state")) {
+        snprintf(out, cap, "%s", states[(size_t)(i % 4)]);
+    } else if (strstr(name, "source")) {
+        snprintf(out, cap, "%s", sources[(size_t)(i % 4)]);
+    } else if (strstr(name, "status")) {
+        snprintf(out, cap, "%s", statuses[(size_t)(i % 4)]);
+    } else if (strstr(name, "msg")) {
+        snprintf(out, cap, "%s", msgs[(size_t)(i % 4)]);
+    } else {
+        snprintf(out, cap, "%s_%02ld", tag->name, i % 100);
+    }
+}
+
+static void free_generated_records(GeneratedRecordSet* set) {
+    if (!set) return;
+    free(set->string_pool);
+    free(set->values_pool);
+    free(set->recs);
+    optbinlog_taglist_free(&set->tags);
+    memset(set, 0, sizeof(*set));
+}
+
+static int build_generated_records(const char* eventlog_dir, long records, GeneratedRecordSet* out) {
+    size_t total_values = 0;
+    size_t total_string_fields = 0;
+    uint64_t rnd = 0x123456789abcdef0ULL;
+    if (!out) return -1;
+    memset(out, 0, sizeof(*out));
+    optbinlog_taglist_init(&out->tags);
+    if (optbinlog_parse_eventlog_dir(eventlog_dir, &out->tags) != 0 || out->tags.len == 0) {
+        free_generated_records(out);
+        fprintf(stderr, "no tags parsed\n");
+        return -1;
+    }
+
+    for (long i = 0; i < records; i++) {
+        OptbinlogTagDef* tag = &out->tags.items[i % (long)out->tags.len];
+        total_values += (size_t)tag->ele_num;
+        for (int e = 0; e < tag->ele_num; e++) {
+            if (tag->eles[e].type_char == 'S') {
+                total_string_fields++;
+            }
+        }
+    }
+
+    out->recs = calloc((size_t)records, sizeof(OptbinlogRecord));
+    out->values_pool = calloc(total_values ? total_values : 1u, sizeof(OptbinlogValue));
+    out->string_pool = total_string_fields ? calloc(total_string_fields, GENERATED_STRING_SLOT) : NULL;
+    if (!out->recs || !out->values_pool || (total_string_fields && !out->string_pool)) {
+        fprintf(stderr, "OOM\n");
+        free_generated_records(out);
+        return -1;
+    }
+
+    size_t val_off = 0;
+    size_t str_off = 0;
+    for (long i = 0; i < records; i++) {
+        OptbinlogTagDef* tag = &out->tags.items[i % (long)out->tags.len];
+        OptbinlogValue* values = out->values_pool + val_off;
+        for (int e = 0; e < tag->ele_num; e++) {
+            OptbinlogTagEleDef* ele = &tag->eles[e];
+            if (ele->type_char == 'L') {
+                uint64_t v = xorshift64(&rnd) & max_for_bits(ele->bits);
+                values[e] = (OptbinlogValue){OPTBINLOG_VAL_U, v, 0.0, NULL};
+            } else if (ele->type_char == 'D') {
+                double v = (double)(xorshift64(&rnd) % 10000u) / 100.0;
+                values[e] = (OptbinlogValue){OPTBINLOG_VAL_D, 0, v, NULL};
+            } else if (ele->type_char == 'S') {
+                char* buf = out->string_pool + str_off * GENERATED_STRING_SLOT;
+                size_t cap = GENERATED_STRING_SLOT;
+                size_t schema_cap = ele_storage_bytes(ele);
+                if (schema_cap > 0 && schema_cap + 1 < cap) {
+                    cap = schema_cap + 1;
+                }
+                generate_string_value(tag, ele, i, buf, cap);
+                values[e] = (OptbinlogValue){OPTBINLOG_VAL_S, 0, 0.0, buf};
+                str_off++;
+            }
+        }
+        out->recs[i].timestamp = 1710000000 + i;
+        out->recs[i].tag_id = tag->tag_id;
+        out->recs[i].ele_count = tag->ele_num;
+        out->recs[i].values = values;
+        val_off += (size_t)tag->ele_num;
+    }
+    return 0;
+}
+
+static int append_record_fields(char** p,
+                                size_t* left,
+                                const OptbinlogTagDef* tag,
+                                const OptbinlogRecord* rec,
+                                const char* sep,
+                                int quote_strings) {
+    (void)tag;
+    for (int e = 0; e < rec->ele_count; e++) {
+        const OptbinlogTagEleDef* ele = &tag->eles[e];
+        const OptbinlogValue* v = &rec->values[e];
+        if (e > 0 && appendf(p, left, "%s", sep) != 0) return -1;
+        if (v->kind == OPTBINLOG_VAL_U) {
+            if (appendf(p, left, "%s=%llu", ele->name, (unsigned long long)v->u) != 0) return -1;
+        } else if (v->kind == OPTBINLOG_VAL_D) {
+            if (appendf(p, left, "%s=%.2f", ele->name, v->d) != 0) return -1;
+        } else if (v->kind == OPTBINLOG_VAL_S) {
+            if (quote_strings) {
+                if (appendf(p, left, "%s=\"%s\"", ele->name, v->s ? v->s : "") != 0) return -1;
+            } else {
+                if (appendf(p, left, "%s=%s", ele->name, v->s ? v->s : "") != 0) return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+static int format_record_text_payload(const OptbinlogTagDef* tag,
+                                      const OptbinlogRecord* rec,
+                                      char* out,
+                                      size_t cap) {
+    char* p = out;
+    size_t left = cap;
+    if (appendf(&p, &left, "ts=%lld id=%d name=%s ",
+                (long long)rec->timestamp, tag->tag_id, tag->name) != 0) {
+        return -1;
+    }
+    return append_record_fields(&p, &left, tag, rec, ",", 1);
+}
+
+static int format_record_ulog_payload(const OptbinlogTagDef* tag,
+                                      const OptbinlogRecord* rec,
+                                      char* out,
+                                      size_t cap) {
+    char* p = out;
+    size_t left = cap;
+    unsigned int level = (unsigned int)(rec->values[0].kind == OPTBINLOG_VAL_U ? (rec->values[0].u & 0x7u) : 0u);
+    if (appendf(&p, &left, "I/%s(%u): ", tag->name, level) != 0) return -1;
+    return append_record_fields(&p, &left, tag, rec, " ", 0);
+}
+
+static int format_record_hilog_message(const OptbinlogTagDef* tag,
+                                       const OptbinlogRecord* rec,
+                                       char* out,
+                                       size_t cap) {
+    char* p = out;
+    size_t left = cap;
+    if (appendf(&p, &left, "%s ", tag->name) != 0) return -1;
+    return append_record_fields(&p, &left, tag, rec, " ", 0);
+}
+
+static size_t write_uint_le_n(uint8_t* dst, uint64_t v, size_t nbytes) {
+    for (size_t i = 0; i < nbytes; i++) {
+        dst[i] = (uint8_t)((v >> (i * 8u)) & 0xFFu);
+    }
+    return nbytes;
+}
+
+static size_t encode_compact_record(uint8_t* out,
+                                    size_t cap,
+                                    const OptbinlogTagDef* tag,
+                                    const OptbinlogRecord* rec) {
+    size_t off = 0;
+    if (cap < 16u) return 0;
+    memcpy(out + off, &rec->timestamp, sizeof(int64_t));
+    off += sizeof(int64_t);
+    write_le16(out + off, (uint16_t)tag->tag_id);
+    off += sizeof(uint16_t);
+    out[off++] = (uint8_t)rec->ele_count;
+    for (int e = 0; e < rec->ele_count; e++) {
+        const OptbinlogTagEleDef* ele = &tag->eles[e];
+        const OptbinlogValue* v = &rec->values[e];
+        if (v->kind == OPTBINLOG_VAL_U) {
+            size_t nbytes = ele_storage_bytes(ele);
+            if (off + nbytes > cap) return 0;
+            off += write_uint_le_n(out + off, v->u, nbytes);
+        } else if (v->kind == OPTBINLOG_VAL_D) {
+            if (off + sizeof(double) > cap) return 0;
+            memcpy(out + off, &v->d, sizeof(double));
+            off += sizeof(double);
+        } else if (v->kind == OPTBINLOG_VAL_S) {
+            size_t schema_cap = ele_storage_bytes(ele);
+            size_t slen = v->s ? strnlen(v->s, schema_cap) : 0u;
+            if (off + 2u + slen > cap) return 0;
+            write_le16(out + off, (uint16_t)slen);
+            off += 2u;
+            if (slen > 0u) {
+                memcpy(out + off, v->s, slen);
+                off += slen;
+            }
+        }
+    }
+    return off;
 }
 
 static int format_text_payload(const OptbinlogTagDef* tag, long i, uint64_t* rnd, char* out, size_t cap) {
@@ -878,7 +1118,59 @@ static int bench_hilog_lite_like(const char* out_path, long records) {
     return 0;
 }
 
-static int bench_nanolog_semantic_like(const char* out_path, long records) {
+static int bench_text_semantic_like(const char* out_path, const char* eventlog_dir, long records) {
+    GeneratedRecordSet set;
+    uint64_t t_e2e0 = now_ns();
+    FILE* fp = fopen(out_path, "wb");
+    if (!fp) {
+        fprintf(stderr, "open %s failed: %s\n", out_path, strerror(errno));
+        return -1;
+    }
+    if (build_generated_records(eventlog_dir, records, &set) != 0) {
+        fclose(fp);
+        return -1;
+    }
+
+    uint64_t t_write0 = now_ns();
+    for (long i = 0; i < records; i++) {
+        const OptbinlogTagDef* tag = &set.tags.items[i % (long)set.tags.len];
+        const OptbinlogRecord* rec = &set.recs[i];
+        char line[2048];
+        if (format_record_text_payload(tag, rec, line, sizeof(line)) != 0) {
+            free_generated_records(&set);
+            fclose(fp);
+            return -1;
+        }
+        if (fputs(line, fp) == EOF || fputc('\n', fp) == EOF) {
+            free_generated_records(&set);
+            fclose(fp);
+            return -1;
+        }
+    }
+    uint64_t t_write1 = now_ns();
+
+    free_generated_records(&set);
+    fclose(fp);
+    uint64_t t_e2e1 = now_ns();
+
+    struct stat st;
+    if (stat(out_path, &st) != 0) {
+        fprintf(stderr, "stat failed\n");
+        return -1;
+    }
+    long rss = max_rss_kb();
+    double write_ms = (double)(t_write1 - t_write0) / 1e6;
+    double end_to_end_ms = (double)(t_e2e1 - t_e2e0) / 1e6;
+    double prep_ms = (double)(t_write0 - t_e2e0) / 1e6;
+    double post_ms = (double)(t_e2e1 - t_write1) / 1e6;
+    printf("mode,text_semantic_like,records,%ld,elapsed_ms,%.3f,write_only_ms,%.3f,end_to_end_ms,%.3f,prep_ms,%.3f,post_ms,%.3f,bytes,%lld,shared_bytes,0,total_bytes,%lld,peak_kb,%ld\n",
+           records, write_ms, write_ms, end_to_end_ms, prep_ms, post_ms,
+           (long long)st.st_size, (long long)st.st_size, rss);
+    return 0;
+}
+
+static int bench_nanolog_semantic_like(const char* out_path, const char* eventlog_dir, long records) {
+    GeneratedRecordSet set;
     uint64_t t_e2e0 = now_ns();
     FILE* fp = fopen(out_path, "wb");
     if (!fp) {
@@ -886,27 +1178,29 @@ static int bench_nanolog_semantic_like(const char* out_path, long records) {
         return -1;
     }
     setvbuf(fp, NULL, _IOFBF, 1 << 20);
-
-    size_t cap = (size_t)records * 40u;
-    uint8_t* staging = malloc(cap);
-    if (!staging) {
+    if (build_generated_records(eventlog_dir, records, &set) != 0) {
         fclose(fp);
-        fprintf(stderr, "OOM\n");
         return -1;
     }
 
-    uint64_t rnd = 0x123456789abcdef0ULL;
-    size_t off = 0;
+    uint8_t scratch[2048];
+    uint64_t bytes = 0;
     uint64_t t_write0 = now_ns();
     for (long i = 0; i < records; i++) {
-        NanoPackedRecord r = make_nano_record(i, &rnd);
-        off += encode_semantic_frame(staging + off, &r);
+        const OptbinlogTagDef* tag = &set.tags.items[i % (long)set.tags.len];
+        const OptbinlogRecord* rec = &set.recs[i];
+        size_t n = encode_compact_record(scratch, sizeof(scratch), tag, rec);
+        if (n == 0 || fwrite(scratch, 1, n, fp) != n) {
+            free_generated_records(&set);
+            fclose(fp);
+            return -1;
+        }
+        bytes += (uint64_t)n;
     }
-    size_t written = fwrite(staging, 1, off, fp);
     fflush(fp);
     uint64_t t_write1 = now_ns();
 
-    free(staging);
+    free_generated_records(&set);
     fclose(fp);
     uint64_t t_e2e1 = now_ns();
 
@@ -917,11 +1211,12 @@ static int bench_nanolog_semantic_like(const char* out_path, long records) {
     double post_ms = (double)(t_e2e1 - t_write1) / 1e6;
     printf("mode,nanolog_semantic_like,records,%ld,elapsed_ms,%.3f,write_only_ms,%.3f,end_to_end_ms,%.3f,prep_ms,%.3f,post_ms,%.3f,bytes,%llu,shared_bytes,0,total_bytes,%llu,peak_kb,%ld\n",
            records, write_ms, write_ms, end_to_end_ms, prep_ms, post_ms,
-           (unsigned long long)written, (unsigned long long)written, rss);
+           (unsigned long long)bytes, (unsigned long long)bytes, rss);
     return 0;
 }
 
-static int bench_zephyr_deferred_semantic_like(const char* out_path, long records) {
+static int bench_zephyr_deferred_semantic_like(const char* out_path, const char* eventlog_dir, long records) {
+    GeneratedRecordSet set;
     uint64_t t_e2e0 = now_ns();
     FILE* fp = fopen(out_path, "wb");
     if (!fp) {
@@ -929,37 +1224,58 @@ static int bench_zephyr_deferred_semantic_like(const char* out_path, long record
         return -1;
     }
     setvbuf(fp, NULL, _IOFBF, 1 << 20);
-
-    const size_t batch_cap = 1024;
-    uint8_t* batch = malloc(batch_cap * 40u);
-    if (!batch) {
+    if (build_generated_records(eventlog_dir, records, &set) != 0) {
         fclose(fp);
-        fprintf(stderr, "OOM\n");
         return -1;
     }
 
-    uint64_t rnd = 0x123456789abcdef0ULL;
+    uint8_t* batch = malloc(256u * 2048u);
+    if (!batch) {
+        fprintf(stderr, "OOM\n");
+        free_generated_records(&set);
+        fclose(fp);
+        return -1;
+    }
+
     uint64_t bytes = 0;
     size_t off = 0;
     uint64_t t_write0 = now_ns();
     for (long i = 0; i < records; i++) {
-        NanoPackedRecord r = make_nano_record(i, &rnd);
-        size_t n = encode_semantic_frame(batch + off, &r);
+        const OptbinlogTagDef* tag = &set.tags.items[i % (long)set.tags.len];
+        const OptbinlogRecord* rec = &set.recs[i];
+        size_t n = encode_compact_record(batch + off, 256u * 2048u - off, tag, rec);
+        if (n == 0) {
+            free(batch);
+            free_generated_records(&set);
+            fclose(fp);
+            return -1;
+        }
         off += n;
-        if (off + 40u > batch_cap * 40u) {
-            size_t w = fwrite(batch, 1, off, fp);
-            bytes += (uint64_t)w;
+        if (off + 2048u > 256u * 2048u) {
+            if (fwrite(batch, 1, off, fp) != off) {
+                free(batch);
+                free_generated_records(&set);
+                fclose(fp);
+                return -1;
+            }
+            bytes += (uint64_t)off;
             off = 0;
         }
     }
     if (off > 0) {
-        size_t w = fwrite(batch, 1, off, fp);
-        bytes += (uint64_t)w;
+        if (fwrite(batch, 1, off, fp) != off) {
+            free(batch);
+            free_generated_records(&set);
+            fclose(fp);
+            return -1;
+        }
+        bytes += (uint64_t)off;
     }
     fflush(fp);
     uint64_t t_write1 = now_ns();
 
     free(batch);
+    free_generated_records(&set);
     fclose(fp);
     uint64_t t_e2e1 = now_ns();
 
@@ -974,91 +1290,173 @@ static int bench_zephyr_deferred_semantic_like(const char* out_path, long record
     return 0;
 }
 
-static int bench_binary(const char* eventlog_dir, const char* shared_path, const char* out_path, long records, int strict_perm) {
+static int bench_ulog_semantic_like(const char* out_path, const char* eventlog_dir, long records) {
+    GeneratedRecordSet set;
     uint64_t t_e2e0 = now_ns();
+    FILE* fp = fopen(out_path, "wb");
+    if (!fp) {
+        fprintf(stderr, "open %s failed: %s\n", out_path, strerror(errno));
+        return -1;
+    }
+    setvbuf(fp, NULL, _IOFBF, 1 << 20);
+    if (build_generated_records(eventlog_dir, records, &set) != 0) {
+        fclose(fp);
+        return -1;
+    }
 
-    OptbinlogTagList tags;
-    optbinlog_taglist_init(&tags);
-    if (optbinlog_parse_eventlog_dir(eventlog_dir, &tags) != 0 || tags.len == 0) {
-        fprintf(stderr, "no tags parsed\n");
-        optbinlog_taglist_free(&tags);
+    uint64_t bytes = 0;
+    uint64_t t_write0 = now_ns();
+    for (long i = 0; i < records; i++) {
+        const OptbinlogTagDef* tag = &set.tags.items[i % (long)set.tags.len];
+        const OptbinlogRecord* rec = &set.recs[i];
+        char line[2048];
+        int n = format_record_ulog_payload(tag, rec, line, sizeof(line));
+        if (n != 0) {
+            free_generated_records(&set);
+            fclose(fp);
+            return -1;
+        }
+        size_t len = strlen(line);
+        if (fwrite(line, 1, len, fp) != len || fputc('\n', fp) == EOF) {
+            free_generated_records(&set);
+            fclose(fp);
+            return -1;
+        }
+        bytes += (uint64_t)len + 1u;
+    }
+    fflush(fp);
+    uint64_t t_write1 = now_ns();
+
+    free_generated_records(&set);
+    fclose(fp);
+    uint64_t t_e2e1 = now_ns();
+
+    long rss = max_rss_kb();
+    double write_ms = (double)(t_write1 - t_write0) / 1e6;
+    double end_to_end_ms = (double)(t_e2e1 - t_e2e0) / 1e6;
+    double prep_ms = (double)(t_write0 - t_e2e0) / 1e6;
+    double post_ms = (double)(t_e2e1 - t_write1) / 1e6;
+    printf("mode,ulog_semantic_like,records,%ld,elapsed_ms,%.3f,write_only_ms,%.3f,end_to_end_ms,%.3f,prep_ms,%.3f,post_ms,%.3f,bytes,%llu,shared_bytes,0,total_bytes,%llu,peak_kb,%ld\n",
+           records, write_ms, write_ms, end_to_end_ms, prep_ms, post_ms,
+           (unsigned long long)bytes, (unsigned long long)bytes, rss);
+    return 0;
+}
+
+static int bench_hilog_semantic_like(const char* out_path, const char* eventlog_dir, long records) {
+    GeneratedRecordSet set;
+    uint64_t t_e2e0 = now_ns();
+    FILE* fp = fopen(out_path, "wb");
+    if (!fp) {
+        fprintf(stderr, "open %s failed: %s\n", out_path, strerror(errno));
+        return -1;
+    }
+    setvbuf(fp, NULL, _IOFBF, 1 << 20);
+    if (build_generated_records(eventlog_dir, records, &set) != 0) {
+        fclose(fp);
+        return -1;
+    }
+
+    uint64_t bytes = 0;
+    uint64_t t_write0 = now_ns();
+    for (long i = 0; i < records; i++) {
+        const OptbinlogTagDef* tag = &set.tags.items[i % (long)set.tags.len];
+        const OptbinlogRecord* rec = &set.recs[i];
+        char msg[2048];
+        int n = format_record_hilog_message(tag, rec, msg, sizeof(msg));
+        if (n != 0) {
+            free_generated_records(&set);
+            fclose(fp);
+            return -1;
+        }
+        size_t len = strlen(msg);
+        if (len > 0xFFFFu) len = 0xFFFFu;
+        HiLogLiteHeader h;
+        h.sec = (uint32_t)(rec->timestamp);
+        h.nsec = 0u;
+        h.domain = 0xD001u;
+        h.tag = (uint16_t)tag->tag_id;
+        h.level = (uint8_t)(i % 8);
+        h.reserved = 0u;
+        h.msg_len = (uint16_t)len;
+        if (fwrite(&h, sizeof(h), 1, fp) != 1 || fwrite(msg, 1, len, fp) != len) {
+            free_generated_records(&set);
+            fclose(fp);
+            return -1;
+        }
+        bytes += (uint64_t)sizeof(h) + (uint64_t)len;
+    }
+    fflush(fp);
+    uint64_t t_write1 = now_ns();
+
+    free_generated_records(&set);
+    fclose(fp);
+    uint64_t t_e2e1 = now_ns();
+
+    long rss = max_rss_kb();
+    double write_ms = (double)(t_write1 - t_write0) / 1e6;
+    double end_to_end_ms = (double)(t_e2e1 - t_e2e0) / 1e6;
+    double prep_ms = (double)(t_write0 - t_e2e0) / 1e6;
+    double post_ms = (double)(t_e2e1 - t_write1) / 1e6;
+    printf("mode,hilog_semantic_like,records,%ld,elapsed_ms,%.3f,write_only_ms,%.3f,end_to_end_ms,%.3f,prep_ms,%.3f,post_ms,%.3f,bytes,%llu,shared_bytes,0,total_bytes,%llu,peak_kb,%ld\n",
+           records, write_ms, write_ms, end_to_end_ms, prep_ms, post_ms,
+           (unsigned long long)bytes, (unsigned long long)bytes, rss);
+    return 0;
+}
+
+static int bench_binary_variant(const char* mode_name,
+                                const char* eventlog_dir,
+                                const char* shared_path,
+                                const char* out_path,
+                                long records,
+                                int strict_perm,
+                                const char* checksum_mode,
+                                int disable_crc,
+                                int varstr_mode,
+                                int hotpath_only) {
+    GeneratedRecordSet set;
+    uint64_t t_e2e0 = hotpath_only ? 0u : now_ns();
+    if (build_generated_records(eventlog_dir, records, &set) != 0) {
         return -1;
     }
 
     if (optbinlog_shared_init_from_dir(eventlog_dir, shared_path, strict_perm) != 0) {
         fprintf(stderr, "shared init failed\n");
-        optbinlog_taglist_free(&tags);
+        free_generated_records(&set);
         return -1;
     }
 
-    size_t total_values = 0;
-    size_t total_string_fields = 0;
-    for (long i = 0; i < records; i++) {
-        OptbinlogTagDef* tag = &tags.items[i % tags.len];
-        total_values += (size_t)tag->ele_num;
-        for (int e = 0; e < tag->ele_num; e++) {
-            if (tag->eles[e].type_char == 'S') {
-                total_string_fields++;
-            }
-        }
+    if (disable_crc) {
+        setenv("OPTBINLOG_BINLOG_DISABLE_CRC", "1", 1);
+    } else {
+        unsetenv("OPTBINLOG_BINLOG_DISABLE_CRC");
+    }
+    if (checksum_mode && checksum_mode[0]) {
+        setenv("OPTBINLOG_BINLOG_CHECKSUM", checksum_mode, 1);
+    } else {
+        unsetenv("OPTBINLOG_BINLOG_CHECKSUM");
+    }
+    if (varstr_mode > 0) {
+        setenv("OPTBINLOG_BINLOG_VARSTR", "1", 1);
+    } else if (varstr_mode == 0) {
+        setenv("OPTBINLOG_BINLOG_VARSTR", "0", 1);
+    } else {
+        unsetenv("OPTBINLOG_BINLOG_VARSTR");
     }
 
-    OptbinlogRecord* recs = calloc((size_t)records, sizeof(OptbinlogRecord));
-    OptbinlogValue* values_pool = calloc(total_values ? total_values : 1, sizeof(OptbinlogValue));
-    char* string_pool = total_string_fields ? malloc(total_string_fields * 16u) : NULL;
-    if (!recs || !values_pool || (total_string_fields && !string_pool)) {
-        fprintf(stderr, "OOM\n");
-        free(recs);
-        free(values_pool);
-        free(string_pool);
-        optbinlog_taglist_free(&tags);
-        return -1;
+    if (hotpath_only) {
+        t_e2e0 = now_ns();
     }
-
-    uint64_t rnd = 0x123456789abcdef0ULL;
-    size_t val_off = 0;
-    size_t str_off = 0;
-    for (long i = 0; i < records; i++) {
-        OptbinlogTagDef* tag = &tags.items[i % tags.len];
-        OptbinlogValue* values = values_pool + val_off;
-        for (int e = 0; e < tag->ele_num; e++) {
-            OptbinlogTagEleDef* ele = &tag->eles[e];
-            if (ele->type_char == 'L') {
-                uint64_t v = xorshift64(&rnd) & max_for_bits(ele->bits);
-                values[e] = (OptbinlogValue){OPTBINLOG_VAL_U, v, 0.0, NULL};
-            } else if (ele->type_char == 'D') {
-                double v = (double)(xorshift64(&rnd) % 10000) / 100.0;
-                values[e] = (OptbinlogValue){OPTBINLOG_VAL_D, 0, v, NULL};
-            } else if (ele->type_char == 'S') {
-                char* buf = string_pool + str_off * 16u;
-                str_off++;
-                snprintf(buf, 16, "dev-%02ld", i % 100);
-                values[e] = (OptbinlogValue){OPTBINLOG_VAL_S, 0, 0.0, buf};
-            }
-        }
-        recs[i].timestamp = 1710000000 + i;
-        recs[i].tag_id = tag->tag_id;
-        recs[i].ele_count = tag->ele_num;
-        recs[i].values = values;
-        val_off += (size_t)tag->ele_num;
-    }
-
     uint64_t t_write0 = now_ns();
-    int rc = optbinlog_binlog_write(shared_path, out_path, recs, (size_t)records);
+    int rc = optbinlog_binlog_write(shared_path, out_path, set.recs, (size_t)records);
     uint64_t t_write1 = now_ns();
+    uint64_t t_e2e1 = now_ns();
 
-    free(string_pool);
-    free(values_pool);
-    free(recs);
-    optbinlog_taglist_free(&tags);
+    free_generated_records(&set);
+    unsetenv("OPTBINLOG_BINLOG_DISABLE_CRC");
+    unsetenv("OPTBINLOG_BINLOG_CHECKSUM");
+    unsetenv("OPTBINLOG_BINLOG_VARSTR");
 
     if (rc != 0) return -1;
-
-    uint64_t t_e2e1 = now_ns();
-    double write_ms = (double)(t_write1 - t_write0) / 1e6;
-    double end_to_end_ms = (double)(t_e2e1 - t_e2e0) / 1e6;
-    double prep_ms = (double)(t_write0 - t_e2e0) / 1e6;
-    double post_ms = (double)(t_e2e1 - t_write1) / 1e6;
 
     struct stat st;
     if (stat(out_path, &st) != 0) {
@@ -1071,8 +1469,12 @@ static int bench_binary(const char* eventlog_dir, const char* shared_path, const
     if (stat(shared_path, &st_shared) == 0) {
         shared_bytes = (long long)st_shared.st_size;
     }
-    printf("mode,binary,records,%ld,elapsed_ms,%.3f,write_only_ms,%.3f,end_to_end_ms,%.3f,prep_ms,%.3f,post_ms,%.3f,bytes,%lld,shared_bytes,%lld,total_bytes,%lld,peak_kb,%ld\n",
-           records, write_ms, write_ms, end_to_end_ms, prep_ms, post_ms,
+    double write_ms = (double)(t_write1 - t_write0) / 1e6;
+    double end_to_end_ms = (double)(t_e2e1 - t_e2e0) / 1e6;
+    double prep_ms = hotpath_only ? 0.0 : (double)(t_write0 - t_e2e0) / 1e6;
+    double post_ms = hotpath_only ? 0.0 : (double)(t_e2e1 - t_write1) / 1e6;
+    printf("mode,%s,records,%ld,elapsed_ms,%.3f,write_only_ms,%.3f,end_to_end_ms,%.3f,prep_ms,%.3f,post_ms,%.3f,bytes,%lld,shared_bytes,%lld,total_bytes,%lld,peak_kb,%ld\n",
+           mode_name, records, write_ms, write_ms, end_to_end_ms, prep_ms, post_ms,
            (long long)st.st_size, shared_bytes, (long long)st.st_size + shared_bytes, rss);
     return 0;
 }
@@ -1110,6 +1512,10 @@ int main(int argc, char** argv) {
         if (!out_path) { usage(argv[0]); return 1; }
         return bench_textlike("text", MODE_TEXT, eventlog_dir, out_path, records) == 0 ? 0 : 1;
     }
+    if (strcmp(mode, "text_semantic_like") == 0) {
+        if (!out_path) { usage(argv[0]); return 1; }
+        return bench_text_semantic_like(out_path, eventlog_dir, records) == 0 ? 0 : 1;
+    }
     if (strcmp(mode, "csv") == 0) {
         if (!out_path) { usage(argv[0]); return 1; }
         return bench_textlike("csv", MODE_CSV, eventlog_dir, out_path, records) == 0 ? 0 : 1;
@@ -1120,7 +1526,35 @@ int main(int argc, char** argv) {
     }
     if (strcmp(mode, "binary") == 0) {
         if (!out_path) { usage(argv[0]); return 1; }
-        return bench_binary(eventlog_dir, shared_path, out_path, records, strict_perm) == 0 ? 0 : 1;
+        return bench_binary_variant("binary", eventlog_dir, shared_path, out_path, records, strict_perm, NULL, 0, -1, 0) == 0 ? 0 : 1;
+    }
+    if (strcmp(mode, "binary_crc32_legacy") == 0) {
+        if (!out_path) { usage(argv[0]); return 1; }
+        return bench_binary_variant("binary_crc32_legacy", eventlog_dir, shared_path, out_path, records, strict_perm, "crc32", 0, 0, 0) == 0 ? 0 : 1;
+    }
+    if (strcmp(mode, "binary_crc32c") == 0) {
+        if (!out_path) { usage(argv[0]); return 1; }
+        return bench_binary_variant("binary_crc32c", eventlog_dir, shared_path, out_path, records, strict_perm, "crc32c", 0, 0, 0) == 0 ? 0 : 1;
+    }
+    if (strcmp(mode, "binary_hotpath") == 0) {
+        if (!out_path) { usage(argv[0]); return 1; }
+        return bench_binary_variant("binary_hotpath", eventlog_dir, shared_path, out_path, records, strict_perm, NULL, 0, -1, 1) == 0 ? 0 : 1;
+    }
+    if (strcmp(mode, "binary_nocrc") == 0) {
+        if (!out_path) { usage(argv[0]); return 1; }
+        return bench_binary_variant("binary_nocrc", eventlog_dir, shared_path, out_path, records, strict_perm, "none", 1, -1, 0) == 0 ? 0 : 1;
+    }
+    if (strcmp(mode, "binary_varstr") == 0) {
+        if (!out_path) { usage(argv[0]); return 1; }
+        return bench_binary_variant("binary_varstr", eventlog_dir, shared_path, out_path, records, strict_perm, NULL, 0, 1, 0) == 0 ? 0 : 1;
+    }
+    if (strcmp(mode, "binary_crc32c_varstr") == 0) {
+        if (!out_path) { usage(argv[0]); return 1; }
+        return bench_binary_variant("binary_crc32c_varstr", eventlog_dir, shared_path, out_path, records, strict_perm, "crc32c", 0, 1, 0) == 0 ? 0 : 1;
+    }
+    if (strcmp(mode, "binary_nocrc_varstr") == 0) {
+        if (!out_path) { usage(argv[0]); return 1; }
+        return bench_binary_variant("binary_nocrc_varstr", eventlog_dir, shared_path, out_path, records, strict_perm, "none", 1, 1, 0) == 0 ? 0 : 1;
     }
     if (strcmp(mode, "syslog") == 0) {
         return bench_syslog(eventlog_dir, records) == 0 ? 0 : 1;
@@ -1146,11 +1580,19 @@ int main(int argc, char** argv) {
     }
     if (strcmp(mode, "nanolog_semantic_like") == 0) {
         if (!out_path) { usage(argv[0]); return 1; }
-        return bench_nanolog_semantic_like(out_path, records) == 0 ? 0 : 1;
+        return bench_nanolog_semantic_like(out_path, eventlog_dir, records) == 0 ? 0 : 1;
     }
     if (strcmp(mode, "zephyr_deferred_semantic_like") == 0) {
         if (!out_path) { usage(argv[0]); return 1; }
-        return bench_zephyr_deferred_semantic_like(out_path, records) == 0 ? 0 : 1;
+        return bench_zephyr_deferred_semantic_like(out_path, eventlog_dir, records) == 0 ? 0 : 1;
+    }
+    if (strcmp(mode, "ulog_semantic_like") == 0) {
+        if (!out_path) { usage(argv[0]); return 1; }
+        return bench_ulog_semantic_like(out_path, eventlog_dir, records) == 0 ? 0 : 1;
+    }
+    if (strcmp(mode, "hilog_semantic_like") == 0) {
+        if (!out_path) { usage(argv[0]); return 1; }
+        return bench_hilog_semantic_like(out_path, eventlog_dir, records) == 0 ? 0 : 1;
     }
 
     usage(argv[0]);

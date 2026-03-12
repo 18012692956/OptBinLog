@@ -92,9 +92,17 @@ def run_once(mode, idx, warmup=False):
     suffix = "warmup" if warmup else "run"
     ext_map = {
         "text": "log",
+        "text_semantic_like": "slog",
         "csv": "csv",
         "jsonl": "jsonl",
         "binary": "bin",
+        "binary_crc32_legacy": "bcrc",
+        "binary_crc32c": "bc32c",
+        "binary_hotpath": "bhot",
+        "binary_nocrc": "bnc",
+        "binary_varstr": "bvs",
+        "binary_crc32c_varstr": "bcv",
+        "binary_nocrc_varstr": "bnv",
         "syslog": "syslog",
         "ftrace": "ftrace",
         "nanolog_like": "nlog",
@@ -104,6 +112,8 @@ def run_once(mode, idx, warmup=False):
         "hilog_lite_like": "hlg",
         "nanolog_semantic_like": "nslog",
         "zephyr_deferred_semantic_like": "zslog",
+        "ulog_semantic_like": "uslog",
+        "hilog_semantic_like": "hslog",
     }
     ext = ext_map.get(mode, "out")
     out_name = f"{mode}_{suffix}_{idx:03d}.{ext}"

@@ -667,7 +667,15 @@ def patch_document_rels_xml(path: Path) -> None:
     if not path.exists():
         return
 
-    tree = ET.parse(path)
+    try:
+        tree = ET.parse(path)
+    except ET.ParseError:
+        raw = path.read_text(encoding="utf-8")
+        # Pandoc may emit unbound ns0-prefixed Relationship nodes in document.xml.rels.
+        # Strip the broken prefix and retry so the rest of the formatter can proceed.
+        raw = re.sub(r"(<\/?)(?:[A-Za-z0-9_]+:)(Relationship\b)", r"\1\2", raw)
+        path.write_text(raw, encoding="utf-8")
+        tree = ET.parse(path)
     root = tree.getroot()
 
     # Prefer PNG targets for compatibility (some viewers fail to render SVG in docx).
