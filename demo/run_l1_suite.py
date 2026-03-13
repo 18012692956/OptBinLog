@@ -94,11 +94,15 @@ class NodeExecutor:
             target = self.node.get("ssh_target")
             if not target:
                 raise RuntimeError(f"node {self.name}: ssh transport requires ssh_target")
-            return ["ssh", "-o", "BatchMode=yes", target, self.shell, "-lc", inner_cmd]
+            remote_cmd = f"{self.shell} -lc {shlex.quote(inner_cmd)}"
+            return ["ssh", "-o", "BatchMode=yes", target, remote_cmd]
         if transport == "prefix":
             prefix = self.node.get("prefix")
             if not isinstance(prefix, list) or not prefix:
                 raise RuntimeError(f"node {self.name}: prefix transport requires prefix list")
+            if str(prefix[0]) == "ssh":
+                remote_cmd = f"{self.shell} -lc {shlex.quote(inner_cmd)}"
+                return [str(x) for x in prefix] + [remote_cmd]
             return [str(x) for x in prefix] + [self.shell, "-lc", inner_cmd]
         raise RuntimeError(f"node {self.name}: unknown transport {transport}")
 
@@ -211,6 +215,8 @@ def build_bench_env(node: NodeExecutor, remote_out: str) -> Dict[str, str]:
         env["OPTBINLOG_SYSLOG_SOURCE"] = str(cfg["syslog_source"])
     if cfg.get("text_profile"):
         env["OPTBINLOG_TEXT_PROFILE"] = str(cfg["text_profile"])
+    if cfg.get("shared_tag_path"):
+        env["OPTBINLOG_SHARED_TAG_PATH"] = str(cfg["shared_tag_path"])
     return env
 
 
@@ -235,6 +241,8 @@ def summarize_node_bench(bench_json: Dict[str, Any]) -> Dict[str, Any]:
         s = summary.get(m, {})
         out["by_mode"][m] = {
             "end_to_end_ms_mean": s.get("end_to_end_ms", {}).get("mean"),
+            "bytes_mean": s.get("bytes", {}).get("mean"),
+            "shared_bytes_mean": s.get("shared_bytes", {}).get("mean"),
             "total_bytes_mean": s.get("total_bytes", {}).get("mean"),
             "throughput_e2e_rps_mean": s.get("throughput_e2e_rps", {}).get("mean"),
         }
@@ -323,6 +331,11 @@ def run_one_node(
 
         node.run_in_workdir(remote_out_cleanup_cmd(node, remote_out), check=False)
         node.run_in_workdir(remote_out_prepare_cmd(node, remote_out), check=True)
+        shared_tag_path = node.node.get("shared_tag_path")
+        if isinstance(shared_tag_path, str) and shared_tag_path.strip():
+            shared_parent = os.path.dirname(shared_tag_path)
+            if shared_parent:
+                node.run_in_workdir(f"mkdir -p {shlex.quote(shared_parent)}", check=True)
 
         applied = netem_apply(node)
         if applied:
@@ -358,7 +371,11 @@ def run_one_node(
 
         bench_json = read_json(bench_json_path)
         node_rec["summary"] = summarize_node_bench(bench_json)
-        node_rec["platform_meta"] = collect_platform_meta(node)
+        try:
+            node_rec["platform_meta"] = collect_platform_meta(node)
+        except Exception as meta_err:
+            node_rec["platform_meta"] = {"error": str(meta_err)}
+            node_rec["platform_meta_warning"] = "platform meta collection skipped"
         node_rec["status"] = "ok"
     except Exception as e:
         node_rec["status"] = "failed"

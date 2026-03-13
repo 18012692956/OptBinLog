@@ -27,7 +27,8 @@ def extract_from_dir(profile: str, peer_mode: str, eventlog_dir: str, profile_di
     by_mode = {}
     for mode in modes:
         tvals = []
-        svals = []
+        payload_vals = []
+        shared_vals = []
         thvals = []
         for _, path in node_dirs:
             data = suite.load_json(path)
@@ -35,11 +36,23 @@ def extract_from_dir(profile: str, peer_mode: str, eventlog_dir: str, profile_di
             if not summ:
                 continue
             tvals.append(float(summ.get("end_to_end_ms", {}).get("mean", 0.0)))
-            svals.append(float(summ.get("total_bytes", {}).get("mean", 0.0)))
+            payload_vals.append(float(summ.get("bytes", {}).get("mean", 0.0)))
+            shared_vals.append(float(summ.get("shared_bytes", {}).get("mean", 0.0)))
             thvals.append(float(summ.get("throughput_e2e_rps", {}).get("mean", 0.0)))
+        payload_vals = list(payload_vals)
+        shared_vals = list(shared_vals)
+        shared_once = max(shared_vals) if shared_vals else 0.0
+        if payload_vals:
+            payload_mean = sum(payload_vals) / len(payload_vals)
+            cluster_total = float(payload_mean * len(node_dirs) + shared_once)
+        else:
+            cluster_total = 0.0
         by_mode[mode] = {
             "time_ms": suite.metric_stats(suite.iqr_filter_values(tvals)),
-            "bytes": suite.metric_stats(suite.iqr_filter_values(svals)),
+            "payload_bytes": suite.metric_stats(payload_vals),
+            "shared_bytes": suite.metric_stats(shared_vals),
+            "bytes": suite.metric_stats([cluster_total]),
+            "cluster_total_bytes": suite.metric_stats([cluster_total]),
             "throughput_rps": suite.metric_stats(suite.iqr_filter_values(thvals)),
         }
 
@@ -49,7 +62,7 @@ def extract_from_dir(profile: str, peer_mode: str, eventlog_dir: str, profile_di
         "eventlog_dir": eventlog_dir,
         "nodes_ok": len(node_dirs),
         "nodes_used": len(node_dirs),
-        "nodes_total": 10,
+        "nodes_total": len(node_dirs),
         "modes": by_mode,
         "source_dir": profile_dir,
     }

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -145,10 +146,41 @@ def build_references_section(block: str) -> str:
 def normalize_body_latex(body_tex: str) -> str:
     replacements = {
         "\\begin{longtable}[]{@{}lrr@{}}": "\\begin{longtable}[]{@{}\n  >{\\raggedright\\arraybackslash}p{(\\linewidth - 4\\tabcolsep) * \\real{0.18}}\n  >{\\raggedleft\\arraybackslash}p{(\\linewidth - 4\\tabcolsep) * \\real{0.41}}\n  >{\\raggedleft\\arraybackslash}p{(\\linewidth - 4\\tabcolsep) * \\real{0.41}}@{}}",
+        "\\begin{longtable}[]{@{}ccc@{}}": "\\begin{longtable}[]{@{}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 4\\tabcolsep) * \\real{0.16}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 4\\tabcolsep) * \\real{0.42}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 4\\tabcolsep) * \\real{0.42}}@{}}",
+        "\\begin{longtable}[]{@{}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.2174}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.2174}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.2174}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.2174}}\n  >{\\raggedright\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.1304}}@{}}": "\\begin{longtable}[]{@{}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.12}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.18}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.18}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.18}}\n  >{\\raggedright\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.34}}@{}}",
+        "\\begin{longtable}[]{@{}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 10\\tabcolsep) * \\real{0.1786}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 10\\tabcolsep) * \\real{0.1786}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 10\\tabcolsep) * \\real{0.1786}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 10\\tabcolsep) * \\real{0.1786}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 10\\tabcolsep) * \\real{0.1786}}\n  >{\\raggedright\\arraybackslash}p{(\\linewidth - 10\\tabcolsep) * \\real{0.1071}}@{}}": "\\begin{longtable}[]{@{}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 10\\tabcolsep) * \\real{0.11}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 10\\tabcolsep) * \\real{0.09}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 10\\tabcolsep) * \\real{0.14}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 10\\tabcolsep) * \\real{0.14}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 10\\tabcolsep) * \\real{0.14}}\n  >{\\raggedright\\arraybackslash}p{(\\linewidth - 10\\tabcolsep) * \\real{0.38}}@{}}",
+        "\\begin{longtable}[]{@{}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.2000}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.2000}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.2000}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.2000}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.2000}}@{}}": "\\begin{longtable}[]{@{}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.16}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.12}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.24}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.24}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.24}}@{}}",
     }
     for src, dst in replacements.items():
         body_tex = body_tex.replace(src, dst)
+    # Keep table header minipages constrained to the column width.
+    body_tex = body_tex.replace("\\begin{minipage}[b]{\\linewidth}", "\\begin{minipage}[t]{\\hsize}")
     return body_tex
+
+
+def convert_svg_assets(body_tex: str) -> None:
+    converter = shutil.which("rsvg-convert")
+    if not converter:
+        print("warning: rsvg-convert not found; SVG assets will not be converted to PDF")
+        return
+
+    svg_refs = sorted(set(re.findall(r"\\includesvg(?:\[[^\]]*\])?\{([^}]+\.svg)\}", body_tex)))
+    for ref in svg_refs:
+        svg_path = Path(ref)
+        if not svg_path.is_absolute():
+            svg_path = (ROOT / svg_path).resolve()
+        if not svg_path.exists():
+            print(f"warning: svg asset not found: {svg_path}")
+            continue
+        pdf_path = svg_path.with_suffix(".pdf")
+        if pdf_path.exists() and pdf_path.stat().st_mtime >= svg_path.stat().st_mtime:
+            continue
+        pdf_path.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [converter, "-f", "pdf", "-o", str(pdf_path), str(svg_path)],
+            check=True,
+            cwd=ROOT,
+        )
 
 
 def main() -> None:
@@ -184,7 +216,9 @@ def main() -> None:
         body_parts.append(build_unnumbered_section("致 谢", ack_block))
     if appendix_block:
         body_parts.append(build_unnumbered_section("附 录A 关键复现实验命令（当前保留结果）", appendix_block))
-    (OUT_DIR / "body.tex").write_text("\n\n".join(x.strip() for x in body_parts if x.strip()) + "\n", encoding="utf-8")
+    body_tex = "\n\n".join(x.strip() for x in body_parts if x.strip()) + "\n"
+    convert_svg_assets(body_tex)
+    (OUT_DIR / "body.tex").write_text(body_tex, encoding="utf-8")
     (OUT_DIR / "keywords.tex").write_text(cn_keywords + "\n", encoding="utf-8")
     (OUT_DIR / "keywords_en.tex").write_text(en_keywords + "\n", encoding="utf-8")
 

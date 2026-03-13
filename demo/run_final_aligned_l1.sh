@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 4 ]]; then
-  echo "usage: $0 <profile> <eventlog_dir> <peer_mode> <out_dir> [records] [repeats] [warmup] [start_delay_s]" >&2
+  echo "usage: $0 <profile> <eventlog_dir> <peer_mode> <out_dir> [records] [repeats] [warmup] [start_delay_s] [node_count]" >&2
   exit 2
 fi
 
@@ -14,6 +14,7 @@ RECORDS="${5:-20000}"
 REPEATS="${6:-3}"
 WARMUP="${7:-1}"
 START_DELAY_S="${8:-10}"
+NODE_COUNT="${9:-10}"
 
 WORKDIR="/Users/sky/Documents/graduation design/demo"
 MODES="text_semantic_like,binary,${PEER_MODE}"
@@ -21,8 +22,11 @@ BUILD_CMD="cd '$WORKDIR'; gcc -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE -D_POSIX_
 
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR/nodes"
+SHARED_TAG_PATH="$OUT_DIR/shared/shared_eventtag.bin"
+mkdir -p "$(dirname "$SHARED_TAG_PATH")"
+rm -f "$SHARED_TAG_PATH"
 
-for i in $(seq -w 1 10); do
+for i in $(seq -w 1 "$NODE_COUNT"); do
   node="thesis-dev-$i"
   name="dev-$i"
   mkdir -p "$OUT_DIR/nodes/$name"
@@ -33,7 +37,7 @@ done
 wait
 
 START_AT="$(python3 -c "import time; print(f'{time.time() + float($START_DELAY_S):.6f}')")"
-for i in $(seq -w 1 10); do
+for i in $(seq -w 1 "$NODE_COUNT"); do
   node="thesis-dev-$i"
   name="dev-$i"
   node_out="$OUT_DIR/nodes/$name/bench_out"
@@ -45,6 +49,7 @@ python3 -c 'import time; t=float(\"$START_AT\"); d=t-time.time(); time.sleep(d i
 export OPTBINLOG_BENCH_OUT_DIR='$node_out' \
 OPTBINLOG_BENCH_BIN=./optbinlog_bench_linux \
 OPTBINLOG_EVENTLOG_DIR='$EVENTLOG_DIR' \
+OPTBINLOG_SHARED_TAG_PATH='$SHARED_TAG_PATH' \
 OPTBINLOG_BENCH_RECORDS='$RECORDS' \
 OPTBINLOG_BENCH_REPEATS='$REPEATS' \
 OPTBINLOG_BENCH_WARMUP='$WARMUP' \

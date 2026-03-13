@@ -31,13 +31,44 @@
 
 % Compatibility helpers for markdown/pandoc-generated snippets.
 \newcommand{\pandocbounded}[1]{#1}
-\newcommand{\includesvg}[2][]{%
-  \IfFileExists{#2.pdf}{%
-    \includegraphics[width=0.92\linewidth,#1]{#2.pdf}%
-  }{%
-    \fbox{\texttt{\detokenize{SVG: #2}}}%
-  }%
+\ExplSyntaxOn
+\cs_new_protected:Npn \thesis_includesvg:nn #1#2
+  {
+    \tl_set:Nn \l_tmpa_tl {#2}
+    \regex_replace_once:nnN { \.svg \Z } {.pdf} \l_tmpa_tl
+    \tl_set:Nx \l_tmpb_tl {../\tl_use:N \l_tmpa_tl}
+    \file_if_exist:nTF {\tl_use:N \l_tmpa_tl}
+      {
+        \includegraphics[width=0.92\linewidth,#1]{\tl_use:N \l_tmpa_tl}
+      }
+      {
+        \file_if_exist:nTF {\tl_use:N \l_tmpb_tl}
+          {
+            \includegraphics[width=0.92\linewidth,#1]{\tl_use:N \l_tmpb_tl}
+          }
+          {
+            \tl_set:Nn \l_tmpc_tl {#2.pdf}
+            \tl_set:Nx \l_tmpd_tl {../#2.pdf}
+            \file_if_exist:nTF {\tl_use:N \l_tmpc_tl}
+              {
+                \includegraphics[width=0.92\linewidth,#1]{\tl_use:N \l_tmpc_tl}
+              }
+              {
+                \file_if_exist:nTF {\tl_use:N \l_tmpd_tl}
+                  {
+                    \includegraphics[width=0.92\linewidth,#1]{\tl_use:N \l_tmpd_tl}
+                  }
+                  {
+                    \fbox{\texttt{\detokenize{Missing SVG/PDF: #2}}}
+                  }
+              }
+          }
+      }
+  }
+\NewDocumentCommand{\includesvg}{ O{} m }{
+  \thesis_includesvg:nn {#1} {#2}
 }
+\ExplSyntaxOff
 \newcommand{\AlertTok}[1]{#1}
 \newcommand{\AnnotationTok}[1]{#1}
 \newcommand{\AttributeTok}[1]{#1}

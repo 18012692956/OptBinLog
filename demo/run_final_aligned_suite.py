@@ -4,6 +4,7 @@ import datetime as dt
 import json
 import math
 import os
+import re
 import shutil
 import statistics
 import subprocess
@@ -32,10 +33,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--single-repeats", type=int, default=5)
     p.add_argument("--single-warmup", type=int, default=1)
     p.add_argument("--multi-records-per-device", type=int, default=800)
-    p.add_argument("--multi-devices", default="2,5,10")
+    p.add_argument("--multi-devices", default="5,10,20,50")
     p.add_argument("--multi-repeats", type=int, default=3)
     p.add_argument("--multi-warmup", type=int, default=1)
     p.add_argument("--l1-template", default=os.path.join(ROOT, "l1_config.linux_10_all_unaligned_initrace.json"))
+    p.add_argument("--l1-node-scales", default="5,10,15,20")
     p.add_argument("--l1-records", type=int, default=20000)
     p.add_argument("--l1-repeats", type=int, default=3)
     p.add_argument("--l1-warmup", type=int, default=1)
@@ -70,6 +72,25 @@ def save_json(path: str, data: dict) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def parse_scale_list(raw: str) -> List[int]:
+    values: List[int] = []
+    seen = set()
+    for part in raw.split(","):
+        text = part.strip()
+        if not text:
+            continue
+        value = int(text)
+        if value <= 0:
+            raise ValueError(f"invalid scale value: {value}")
+        if value in seen:
+            continue
+        seen.add(value)
+        values.append(value)
+    if not values:
+        raise ValueError("scale list is empty")
+    return values
 
 
 def percentile(values: List[float], p: float) -> float:
@@ -251,7 +272,7 @@ def run_multi_mode_once(
 
 
 def run_multi_profile(profile: dict, out_dir: str, args: argparse.Namespace) -> dict:
-    devices_list = [int(x.strip()) for x in args.multi_devices.split(",") if x.strip()]
+    devices_list = parse_scale_list(args.multi_devices)
     modes = MAIN_MODES + [profile["peer_mode"]]
     scenarios = []
     eventlog_dir = os.path.join(ROOT, profile["eventlog_dir"])
@@ -303,24 +324,85 @@ def run_multi_profile(profile: dict, out_dir: str, args: argparse.Namespace) -> 
     return {"profile": profile["name"], "peer_mode": profile["peer_mode"], "scenarios": scenarios}
 
 
-def prepare_l1_config(template_path: str, out_path: str, profile: dict, args: argparse.Namespace) -> str:
+def renumber_l1_node(base_node: dict, index: int) -> dict:
+    node = copy.deepcopy(base_node)
+    node["name"] = f"dev-{index:02d}"
+    prefix = node.get("prefix")
+    if isinstance(prefix, list):
+        node["prefix"] = [
+            re.sub(r"thesis-dev-\d{2}", f"thesis-dev-{index:02d}", str(item)) for item in prefix
+        ]
+    ssh_target = node.get("ssh_target")
+    if isinstance(ssh_target, str):
+        node["ssh_target"] = re.sub(r"thesis-dev-\d{2}", f"thesis-dev-{index:02d}", ssh_target)
+    remote_out_dir = node.get("remote_out_dir")
+    if isinstance(remote_out_dir, str):
+        node["remote_out_dir"] = re.sub(r"dev-\d{2}", f"dev-{index:02d}", remote_out_dir)
+    return node
+
+
+def stabilize_lima_prefix(node: dict) -> dict:
+    # In sandboxed environments, direct ssh to ~/.lima sockets can fail with
+    # permission errors. Keep limactl transport by default and only switch to
+    # ssh when explicitly requested.
+    if os.environ.get("OPTBINLOG_L1_USE_SSH_PREFIX", "").strip().lower() not in {"1", "true", "yes"}:
+        return node
+    prefix = node.get("prefix")
+    if not (node.get("transport") == "prefix" and isinstance(prefix, list) and len(prefix) >= 4):
+        return node
+    if [str(x) for x in prefix[:2]] != ["limactl", "shell"]:
+        return node
+    instance = str(prefix[2])
+    ssh_cfg = os.path.expanduser(os.path.join("~", ".lima", instance, "ssh.config"))
+    if not os.path.exists(ssh_cfg):
+        return node
+    node["prefix"] = ["ssh", "-F", ssh_cfg, f"lima-{instance}"]
+    return node
+
+
+def expand_l1_nodes(nodes: List[dict], target_count: int) -> List[dict]:
+    if not nodes:
+        raise RuntimeError("l1 template has no nodes")
+    expanded: List[dict] = []
+    for idx in range(1, target_count + 1):
+        base = nodes[(idx - 1) % len(nodes)]
+        expanded.append(stabilize_lima_prefix(renumber_l1_node(base, idx)))
+    return expanded
+
+
+def prepare_l1_config(
+    template_path: str,
+    out_path: str,
+    profile: dict,
+    args: argparse.Namespace,
+    node_count: int,
+    shared_tag_path: str = "",
+) -> str:
     cfg = copy.deepcopy(load_json(template_path))
-    cfg["tag"] = f"aligned_l1_{profile['name']}"
+    cfg["tag"] = f"aligned_l1_{profile['name']}_{node_count:02d}nodes"
     cfg["parallel"] = True
-    cfg["max_workers"] = int(args.l1_max_workers)
+    cfg["max_workers"] = min(int(args.l1_max_workers), int(node_count))
     cfg["start_sync_delay_s"] = float(args.l1_start_sync_delay)
     eventlog_dir = os.path.join(ROOT, profile["eventlog_dir"])
     modes = ",".join(MAIN_MODES + [profile["peer_mode"]])
+    cfg["nodes"] = expand_l1_nodes(cfg.get("nodes", []), int(node_count))
     for node in cfg.get("nodes", []):
+        # Use the shared host-mounted workspace path to avoid per-VM path drift.
+        node["workdir"] = ROOT
         node["eventlog_dir"] = eventlog_dir
         node["records"] = int(args.l1_records)
         node["repeats"] = int(args.l1_repeats)
         node["warmup"] = int(args.l1_warmup)
         node["modes"] = modes
         node["baseline"] = "text_semantic_like"
+        node.pop("build_cmd", None)
         node["bench_bin"] = "./optbinlog_bench_linux"
         node["bench_prefix"] = ""
         node["text_profile"] = "semantic"
+        if shared_tag_path:
+            node["shared_tag_path"] = shared_tag_path
+        else:
+            node.pop("shared_tag_path", None)
         node.pop("trace_marker", None)
         node.pop("syslog_source", None)
         if args.l1_disable_netem:
@@ -334,9 +416,59 @@ def run_l1_profile(config_path: str, tag: str) -> str:
     return os.path.join(ROOT, "results", tag, "l1_summary.json")
 
 
+def to_float_or_none(value):
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def load_node_mode_space_from_bench(source_root: str, node_name: str, mode: str) -> Dict[str, float]:
+    bench_json = os.path.join(source_root, "nodes", node_name, "bench_out", "bench_result.json")
+    if not os.path.exists(bench_json):
+        return {"bytes": None, "shared": None, "total": None}
+    data = load_json(bench_json)
+    ms = data.get("summary", {}).get(mode, {})
+    payload = to_float_or_none(ms.get("bytes", {}).get("mean"))
+    shared = to_float_or_none(ms.get("shared_bytes", {}).get("mean"))
+    total = to_float_or_none(ms.get("total_bytes", {}).get("mean"))
+    return {"bytes": payload, "shared": shared, "total": total}
+
+
+def resolve_node_mode_space(source_root: str, node: dict, mode: str) -> Dict[str, float]:
+    bm = node.get("summary", {}).get("by_mode", {}).get(mode, {}) or {}
+    payload = to_float_or_none(bm.get("bytes_mean"))
+    shared = to_float_or_none(bm.get("shared_bytes_mean"))
+    total = to_float_or_none(bm.get("total_bytes_mean"))
+
+    if payload is None or shared is None or total is None:
+        from_bench = load_node_mode_space_from_bench(source_root, str(node.get("name", "")), mode)
+        if payload is None:
+            payload = from_bench["bytes"]
+        if shared is None:
+            shared = from_bench["shared"]
+        if total is None:
+            total = from_bench["total"]
+
+    if payload is None and total is not None and shared is not None:
+        payload = total - shared
+    if shared is None and total is not None and payload is not None:
+        shared = max(0.0, total - payload)
+    if total is None and payload is not None and shared is not None:
+        total = payload + shared
+
+    payload = float(payload or 0.0)
+    shared = float(shared or 0.0)
+    total = float(total or (payload + shared))
+    return {"bytes": payload, "shared": shared, "total": total}
+
+
 def extract_l1_profile(path: str, profile: dict) -> dict:
     data = load_json(path)
     modes = MAIN_MODES + [profile["peer_mode"]]
+    source_root = os.path.dirname(path)
     usable_nodes = []
     for n in data.get("nodes", []):
         by_mode = n.get("summary", {}).get("by_mode", {})
@@ -348,20 +480,37 @@ def extract_l1_profile(path: str, profile: dict) -> dict:
     by_mode = {}
     for mode in modes:
         tvals = []
-        svals = []
+        payload_vals = []
+        shared_vals = []
         thvals = []
         for n in usable_nodes:
             bm = n.get("summary", {}).get("by_mode", {}).get(mode, {})
             if bm:
                 tvals.append(float(bm.get("end_to_end_ms_mean", 0.0)))
-                svals.append(float(bm.get("total_bytes_mean", 0.0)))
                 thvals.append(float(bm.get("throughput_e2e_rps_mean", 0.0)))
+                space = resolve_node_mode_space(source_root, n, mode)
+                payload_vals.append(float(space["bytes"]))
+                shared_vals.append(float(space["shared"]))
         tvals = iqr_filter_values(tvals)
-        svals = iqr_filter_values(svals)
+        # Space should use all usable nodes to keep cluster accounting stable.
+        payload_vals = list(payload_vals)
+        shared_vals = list(shared_vals)
         thvals = iqr_filter_values(thvals)
+        # Unified metric: cluster total bytes with shared metadata counted once.
+        shared_once = max(shared_vals) if shared_vals else 0.0
+        if payload_vals:
+            # Normalize to the scenario node count so one missing mode result on
+            # an individual node does not distort cluster-space percentages.
+            payload_mean = statistics.fmean(payload_vals)
+            cluster_bytes = float(payload_mean * len(usable_nodes) + shared_once)
+        else:
+            cluster_bytes = 0.0
         by_mode[mode] = {
             "time_ms": metric_stats(tvals),
-            "bytes": metric_stats(svals),
+            "payload_bytes": metric_stats(payload_vals),
+            "shared_bytes": metric_stats(shared_vals),
+            "bytes": metric_stats([cluster_bytes]),
+            "cluster_total_bytes": metric_stats([cluster_bytes]),
             "throughput_rps": metric_stats(thvals),
         }
 
@@ -374,6 +523,41 @@ def extract_l1_profile(path: str, profile: dict) -> dict:
         "nodes_total": len(data.get("nodes", [])),
         "modes": by_mode,
         "source_json": path,
+    }
+
+
+def run_l1_scan_profile(profile: dict, out_dir: str, args: argparse.Namespace, ts: str) -> dict:
+    node_scales = parse_scale_list(args.l1_node_scales)
+    scenarios = []
+    for node_count in node_scales:
+        cfg_path = os.path.join(out_dir, f"config_{profile['name']}_{node_count:02d}nodes.json")
+        shared_tag_path = os.path.join(out_dir, "shared_tag", f"{profile['name']}_{node_count:02d}nodes_shared_eventtag.bin")
+        os.makedirs(os.path.dirname(shared_tag_path), exist_ok=True)
+        if os.path.exists(shared_tag_path):
+            os.remove(shared_tag_path)
+        prepare_l1_config(args.l1_template, cfg_path, profile, args, node_count, shared_tag_path=shared_tag_path)
+        tag = f"final_aligned_l1_{profile['name']}_{node_count:02d}nodes_{ts}"
+        summary_path = run_l1_profile(cfg_path, tag)
+        src_dir = os.path.join(ROOT, "results", tag)
+        dst_dir = os.path.join(out_dir, f"{node_count:02d}_nodes")
+        if os.path.exists(dst_dir):
+            shutil.rmtree(dst_dir)
+        shutil.copytree(src_dir, dst_dir)
+        summary = extract_l1_profile(summary_path, profile)
+        if summary["nodes_ok"] != node_count or summary["nodes_used"] != node_count:
+            raise RuntimeError(
+                f"incomplete l1 run for {profile['name']} at {node_count} nodes: "
+                f"ok={summary['nodes_ok']} used={summary['nodes_used']} total={summary['nodes_total']}"
+            )
+        summary["nodes"] = node_count
+        summary["source_dir"] = dst_dir
+        save_json(os.path.join(dst_dir, "l1_extracted.json"), summary)
+        scenarios.append(summary)
+    return {
+        "profile": profile["name"],
+        "peer_mode": profile["peer_mode"],
+        "node_scales": node_scales,
+        "scenarios": scenarios,
     }
 
 
@@ -611,7 +795,7 @@ def build_l1_overview_svg(rows: List[dict], out_path: str) -> None:
     role_color = {"text_semantic_like": "#7f7f7f", "binary": "#1f78b4", "peer": "#e31a1c"}
     metrics = [
         ("time_ms", "Time", "ms", False),
-        ("bytes", "Space", "bytes", False),
+        ("bytes", "Space (shared counted once)", "bytes (cluster total)", False),
         ("throughput_rps", "Throughput", "records/s", True),
     ]
     gcount = max(1, len(rows))
@@ -626,7 +810,7 @@ def build_l1_overview_svg(rows: List[dict], out_path: str) -> None:
     lines = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">']
     lines.append('<rect width="100%" height="100%" fill="#ffffff"/>')
     lines.append('<text x="50%" y="34" text-anchor="middle" font-family="Arial" font-size="21">Strict Aligned Real-Device Simulation Overview</text>')
-    lines.append('<text x="50%" y="58" text-anchor="middle" font-family="Arial" font-size="13">multi-VM nodes; one node = one device; bars show node-aggregated IQR-filtered means</text>')
+    lines.append('<text x="50%" y="58" text-anchor="middle" font-family="Arial" font-size="13">multi-VM nodes; one node = one device; space uses cluster total with shared file counted once</text>')
 
     for pi, (metric_key, metric_title, unit, higher_better) in enumerate(metrics):
         x0 = margin + pi * (panel_w + gap)
@@ -682,6 +866,156 @@ def build_l1_overview_svg(rows: List[dict], out_path: str) -> None:
         f.write("\n".join(lines))
 
 
+def build_l1_scan_svg(rows: List[dict], out_path: str, metric_key: str, title: str, unit: str) -> None:
+    width = 1600
+    height = 680
+    margin = 80
+    panel_gap = 30
+    panel_w = (width - margin * 2 - panel_gap) / 2.0
+    panel_h = 220
+    colors = {"text_semantic_like": "#7f7f7f", "binary": "#1f78b4", "peer": "#e31a1c"}
+    lines = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">']
+    lines.append('<rect width="100%" height="100%" fill="#ffffff"/>')
+    lines.append(f'<text x="50%" y="34" text-anchor="middle" font-family="Arial" font-size="20">{title}</text>')
+    lines.append(f'<text x="50%" y="58" text-anchor="middle" font-family="Arial" font-size="12">strict aligned real multi-node simulation; one node = one device</text>')
+
+    for pi, row in enumerate(rows):
+        x0 = margin + (pi % 2) * (panel_w + panel_gap)
+        y0 = 100 + (pi // 2) * 270
+        peer = row["peer_mode"]
+        xs = [float(sc["nodes"]) for sc in row["l1_scan"]["scenarios"]]
+        ys = []
+        for sc in row["l1_scan"]["scenarios"]:
+            ys.extend([
+                float(sc["modes"]["text_semantic_like"][metric_key]["mean"]),
+                float(sc["modes"]["binary"][metric_key]["mean"]),
+                float(sc["modes"][peer][metric_key]["mean"]),
+            ])
+        xmin, xmax = min(xs), max(xs)
+        ymin, ymax = min(ys), max(ys)
+        if ymax <= ymin:
+            ymax = ymin + 1.0
+        ypad = max((ymax - ymin) * 0.12, 1.0)
+        ymin = max(0.0, ymin - ypad)
+        ymax += ypad
+        lines.append(f'<rect x="{x0}" y="{y0}" width="{panel_w}" height="{panel_h}" fill="#fff" stroke="#d9d9d9"/>')
+        lines.append(f'<text x="{x0 + panel_w/2}" y="{y0 - 10}" text-anchor="middle" font-family="Arial" font-size="14">{row["profile"]}</text>')
+        for gi in range(6):
+            frac = gi / 5.0
+            y = y0 + panel_h * (1.0 - frac)
+            v = ymin + (ymax - ymin) * frac
+            lines.append(f'<line x1="{x0}" y1="{y}" x2="{x0 + panel_w}" y2="{y}" stroke="#f2f2f2"/>')
+            lines.append(f'<text x="{x0 - 8}" y="{y + 4}" text-anchor="end" font-family="Arial" font-size="10">{v:.0f}</text>')
+
+        def x_map(v: float) -> float:
+            return x0 + ((v - xmin) / (xmax - xmin)) * panel_w if xmax > xmin else x0 + panel_w / 2
+
+        def y_map(v: float) -> float:
+            return y0 + panel_h - ((v - ymin) / (ymax - ymin)) * panel_h
+
+        for node_count in xs:
+            x = x_map(node_count)
+            lines.append(f'<line x1="{x}" y1="{y0}" x2="{x}" y2="{y0 + panel_h}" stroke="#f9f9f9"/>')
+            lines.append(f'<text x="{x}" y="{y0 + panel_h + 18}" text-anchor="middle" font-family="Arial" font-size="10">{int(node_count)}</text>')
+
+        for mode in ["text_semantic_like", "binary", peer]:
+            pts = []
+            color = colors["peer"] if mode == peer else colors[mode]
+            for sc in row["l1_scan"]["scenarios"]:
+                val = float(sc["modes"][mode][metric_key]["mean"])
+                pts.append(f"{x_map(float(sc['nodes']))},{y_map(val)}")
+            lines.append(f'<polyline fill="none" stroke="{color}" stroke-width="2.2" points="{" ".join(pts)}"/>')
+            for sc in row["l1_scan"]["scenarios"]:
+                val = float(sc["modes"][mode][metric_key]["mean"])
+                lines.append(f'<circle cx="{x_map(float(sc["nodes"]))}" cy="{y_map(val)}" r="3.5" fill="{color}"/>')
+        lines.append(f'<text x="{x0 + panel_w/2}" y="{y0 + panel_h + 42}" text-anchor="middle" font-family="Arial" font-size="11">{unit}</text>')
+
+    legend_y = height - 32
+    lx = margin
+    for idx, (label, color) in enumerate([("text_semantic_like", colors["text_semantic_like"]), ("binary", colors["binary"]), ("peer semantic_like", colors["peer"])]):
+        x = lx + idx * 180
+        lines.append(f'<line x1="{x}" y1="{legend_y - 5}" x2="{x + 18}" y2="{legend_y - 5}" stroke="{color}" stroke-width="2.2"/>')
+        lines.append(f'<text x="{x + 26}" y="{legend_y}" font-family="Arial" font-size="12">{label}</text>')
+    lines.append("</svg>")
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+
+
+def build_l1_scan_delta_svg(rows: List[dict], out_path: str, title: str) -> None:
+    width = 1600
+    height = 680
+    margin = 80
+    panel_gap = 30
+    panel_w = (width - margin * 2 - panel_gap) / 2.0
+    panel_h = 220
+    metrics = [
+        ("time_ms", "Time vs peer (%)", "#1f78b4", False),
+        ("bytes", "Space vs peer (%)", "#33a02c", False),
+        ("throughput_rps", "Throughput vs peer (%)", "#e31a1c", True),
+    ]
+    lines = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">']
+    lines.append('<rect width="100%" height="100%" fill="#ffffff"/>')
+    lines.append(f'<text x="50%" y="34" text-anchor="middle" font-family="Arial" font-size="20">{title}</text>')
+    lines.append('<text x="50%" y="58" text-anchor="middle" font-family="Arial" font-size="12">positive means final binary is better than the peer under aligned semantics</text>')
+
+    for pi, row in enumerate(rows):
+        x0 = margin + (pi % 2) * (panel_w + panel_gap)
+        y0 = 100 + (pi // 2) * 270
+        peer = row["peer_mode"]
+        xs = [float(sc["nodes"]) for sc in row["l1_scan"]["scenarios"]]
+        delta_series = {key: [] for key, _, _, _ in metrics}
+        for sc in row["l1_scan"]["scenarios"]:
+            for key, _, _, higher_better in metrics:
+                bin_v = float(sc["modes"]["binary"][key]["mean"])
+                peer_v = float(sc["modes"][peer][key]["mean"])
+                delta_series[key].append(pct_improve(peer_v, bin_v, higher_better))
+        all_vals = [v for vals in delta_series.values() for v in vals]
+        bound = max(5.0, max(abs(v) for v in all_vals) if all_vals else 5.0)
+        ymin, ymax = -bound, bound
+
+        lines.append(f'<rect x="{x0}" y="{y0}" width="{panel_w}" height="{panel_h}" fill="#fff" stroke="#d9d9d9"/>')
+        lines.append(f'<text x="{x0 + panel_w/2}" y="{y0 - 10}" text-anchor="middle" font-family="Arial" font-size="14">{row["profile"]}</text>')
+
+        def x_map(v: float) -> float:
+            xmin, xmax = min(xs), max(xs)
+            return x0 + ((v - xmin) / (xmax - xmin)) * panel_w if xmax > xmin else x0 + panel_w / 2
+
+        def y_map(v: float) -> float:
+            return y0 + panel_h - ((v - ymin) / (ymax - ymin)) * panel_h
+
+        zero_y = y_map(0.0)
+        lines.append(f'<line x1="{x0}" y1="{zero_y}" x2="{x0 + panel_w}" y2="{zero_y}" stroke="#999" stroke-width="1.2"/>')
+        for gi in range(7):
+            frac = gi / 6.0
+            v = ymin + (ymax - ymin) * frac
+            y = y_map(v)
+            lines.append(f'<line x1="{x0}" y1="{y}" x2="{x0 + panel_w}" y2="{y}" stroke="#f3f3f3"/>')
+            lines.append(f'<text x="{x0 - 8}" y="{y + 4}" text-anchor="end" font-family="Arial" font-size="10">{v:.0f}</text>')
+
+        for node_count in xs:
+            x = x_map(node_count)
+            lines.append(f'<line x1="{x}" y1="{y0}" x2="{x}" y2="{y0 + panel_h}" stroke="#f9f9f9"/>')
+            lines.append(f'<text x="{x}" y="{y0 + panel_h + 18}" text-anchor="middle" font-family="Arial" font-size="10">{int(node_count)}</text>')
+
+        legend_x = x0 + 12
+        legend_y = y0 + 18
+        for li, (key, label, color, _) in enumerate(metrics):
+            pts = []
+            for node_count, delta in zip(xs, delta_series[key]):
+                pts.append(f"{x_map(node_count)},{y_map(delta)}")
+            lines.append(f'<polyline fill="none" stroke="{color}" stroke-width="2.2" points="{" ".join(pts)}"/>')
+            for node_count, delta in zip(xs, delta_series[key]):
+                lines.append(f'<circle cx="{x_map(node_count)}" cy="{y_map(delta)}" r="3.5" fill="{color}"/>')
+            lines.append(f'<line x1="{legend_x}" y1="{legend_y + li * 16}" x2="{legend_x + 18}" y2="{legend_y + li * 16}" stroke="{color}" stroke-width="2.2"/>')
+            lines.append(f'<text x="{legend_x + 26}" y="{legend_y + li * 16 + 4}" font-family="Arial" font-size="10">{label}</text>')
+
+    lines.append("</svg>")
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+
+
 def build_report(rows: List[dict], out_path: str, include_l1: bool) -> None:
     lines: List[str] = []
     lines.append("# Final Aligned Comparison Report")
@@ -692,6 +1026,7 @@ def build_report(rows: List[dict], out_path: str, include_l1: bool) -> None:
     lines.append("- Binary definition: cached schema/tag cache + per-record CRC32C(hw) + auto-varstr on string-heavy schemas")
     lines.append("- Fairness controls: same schema, same generated values, same platform within each category")
     lines.append("- Categories: single high-load, local multi-device simulation, real-device simulation (multi-VM nodes)")
+    lines.append("- Real-device space metric note: `size%` uses cluster total bytes with shared metadata file counted once (not repeated per node).")
     lines.append("- Visuals: single overview + direct binary-vs-peer deltas; multi-device time/throughput/space scans; real-device overview + direct deltas")
     lines.append("")
 
@@ -762,6 +1097,28 @@ def build_report(rows: List[dict], out_path: str, include_l1: bool) -> None:
                 f"{pct_improve(tq, bq, True):+.2f}% | {pct_improve(pq, bq, True):+.2f}% |"
             )
         lines.append("")
+        lines.append("## Real-Device Node-Scale Scan")
+        lines.append("")
+        for row in rows:
+            peer = row["peer_mode"]
+            lines.append(f"### {row['profile']}")
+            lines.append("")
+            lines.append("| nodes | binary vs text time% | binary vs peer time% | binary vs text thr% | binary vs peer thr% | binary vs peer size% |")
+            lines.append("|---|---:|---:|---:|---:|---:|")
+            for sc in row["l1_scan"]["scenarios"]:
+                text_t = float(sc["modes"]["text_semantic_like"]["time_ms"]["mean"])
+                bin_t = float(sc["modes"]["binary"]["time_ms"]["mean"])
+                peer_t = float(sc["modes"][peer]["time_ms"]["mean"])
+                text_q = float(sc["modes"]["text_semantic_like"]["throughput_rps"]["mean"])
+                bin_q = float(sc["modes"]["binary"]["throughput_rps"]["mean"])
+                peer_q = float(sc["modes"][peer]["throughput_rps"]["mean"])
+                peer_b = float(sc["modes"][peer]["bytes"]["mean"])
+                bin_b = float(sc["modes"]["binary"]["bytes"]["mean"])
+                lines.append(
+                    f"| {sc['nodes']} | {pct_improve(text_t, bin_t, False):+.2f}% | {pct_improve(peer_t, bin_t, False):+.2f}% | "
+                    f"{pct_improve(text_q, bin_q, True):+.2f}% | {pct_improve(peer_q, bin_q, True):+.2f}% | {pct_improve(peer_b, bin_b, False):+.2f}% |"
+                )
+            lines.append("")
 
     lines.append("## Interpretation Summary")
     lines.append("")
@@ -800,17 +1157,10 @@ def main() -> None:
     if include_l1:
         for row in rows:
             profile = next(p for p in PROFILES if p["name"] == row["profile"])
-            cfg_path = os.path.join(l1_root, f"config_{profile['name']}.json")
-            prepare_l1_config(args.l1_template, cfg_path, profile, args)
             dst_dir = os.path.join(l1_root, profile["name"])
             ensure_clean_dir(dst_dir)
-            tag = f"final_aligned_l1_{profile['name']}_{ts}"
-            summary_path = run_l1_profile(cfg_path, tag)
-            l1_src_dir = os.path.join(ROOT, "results", tag)
-            if os.path.exists(dst_dir):
-                shutil.rmtree(dst_dir)
-            shutil.copytree(l1_src_dir, dst_dir)
-            row["l1"] = extract_l1_profile(summary_path, profile)
+            row["l1_scan"] = run_l1_scan_profile(profile, dst_dir, args, ts)
+            row["l1"] = row["l1_scan"]["scenarios"][-1]
 
     summary_path = os.path.join(merged_root, "final_aligned_summary.json")
     save_json(summary_path, {"generated_at": ts, "rows": rows})
@@ -833,6 +1183,20 @@ def main() -> None:
         build_l1_overview_svg(l1_rows, l1_svg)
         l1_delta_svg = os.path.join(merged_root, "l1_binary_vs_peer.svg")
         build_direct_delta_svg(rows, "l1", l1_delta_svg, "Strict Aligned Real-Device: Final Binary vs Peer")
+        l1_time_scan_svg = os.path.join(merged_root, "l1_node_time_scan.svg")
+        build_l1_scan_svg(rows, l1_time_scan_svg, "time_ms", "Strict Aligned Real-Device Time Scan", "ms")
+        l1_thr_scan_svg = os.path.join(merged_root, "l1_node_throughput_scan.svg")
+        build_l1_scan_svg(rows, l1_thr_scan_svg, "throughput_rps", "Strict Aligned Real-Device Throughput Scan", "records/s")
+        l1_space_scan_svg = os.path.join(merged_root, "l1_node_space_scan.svg")
+        build_l1_scan_svg(
+            rows,
+            l1_space_scan_svg,
+            "bytes",
+            "Strict Aligned Real-Device Cluster Space Scan (shared counted once)",
+            "bytes (cluster total, shared counted once)",
+        )
+        l1_scan_delta_svg = os.path.join(merged_root, "l1_node_binary_vs_peer_scan.svg")
+        build_l1_scan_delta_svg(rows, l1_scan_delta_svg, "Strict Aligned Real-Device: Binary vs Peer Across Node Scales")
     report_md = os.path.join(merged_root, "final_aligned_report.md")
     build_report(rows, report_md, include_l1)
 
@@ -856,6 +1220,11 @@ def main() -> None:
         print("saved", l1_svg)
     if l1_delta_svg:
         print("saved", l1_delta_svg)
+    if include_l1:
+        print("saved", os.path.join(merged_root, "l1_node_time_scan.svg"))
+        print("saved", os.path.join(merged_root, "l1_node_throughput_scan.svg"))
+        print("saved", os.path.join(merged_root, "l1_node_space_scan.svg"))
+        print("saved", os.path.join(merged_root, "l1_node_binary_vs_peer_scan.svg"))
     print("saved", report_md)
     print("saved", latest)
 

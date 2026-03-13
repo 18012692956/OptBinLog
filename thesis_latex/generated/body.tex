@@ -44,12 +44,12 @@
 \item
   建立抽象数学模型，推导不同模式在 \texttt{N}、\texttt{D} 维度下的性能趋势。
 \item
-  组织多轮实验（单机高负载、多设备模拟、模拟真实多设备（多台虚拟机节点）并发、init-race）并进行理论对照分析。
+  组织多轮实验（单机高负载、多设备模拟、真实多设备模拟（多台虚拟机节点）并发、init-race）并进行理论对照分析。
 \end{enumerate}
 
 \subsection{研究方法与工作中心}\label{ux7814ux7a76ux65b9ux6cd5ux4e0eux5de5ux4f5cux4e2dux5fc3}
 
-围绕前述研究问题，本文将工作中心放在三条主线上： 1. \textbf{机制主线}：从日志系统算法与数据结构出发，不先下结论，先解释为什么会快/慢、为什么会大/小。 2. \textbf{对照主线}：不只做 \texttt{text} 对比，还和 \texttt{syslog/ftrace/nanolog/zephyr/ulog/hilog} 做同语义分组对照。 3. \textbf{验证主线}：统一统计口径与可复现实验脚本，按``理论推导 -\textgreater{} 单机 -\textgreater{} 多设备 -\textgreater{} 模拟真实多设备（多台虚拟机节点）''逐层验证。
+围绕前述研究问题，本文将工作中心放在三条主线上： 1. \textbf{机制主线}：从日志系统算法与数据结构出发，不先下结论，先解释为什么会快/慢、为什么会大/小。 2. \textbf{对照主线}：不只做 \texttt{text} 对比，还和 \texttt{syslog/ftrace/nanolog/zephyr/ulog/hilog} 做同语义分组对照。 3. \textbf{验证主线}：统一统计口径与可复现实验脚本，按``理论推导 -\textgreater{} 单机 -\textgreater{} 多设备 -\textgreater{} 真实多设备模拟（多台虚拟机节点）''逐层验证。
 
 \subsection{研究创新点}\label{ux7814ux7a76ux521bux65b0ux70b9}
 
@@ -63,8 +63,12 @@
 \item
   建立``工程近似层 + 严格公平层''两级实验体系：前者保留真实系统路径差异，后者统一 schema、统一生成值与统一平台，避免把语义体量差或输入来源差误判为实现优劣。
 \item
-  在模拟真实多设备（多台虚拟机节点）场景下验证初始化竞争与并发写入行为，形成可复现实验流程。
+  在真实多设备模拟（多台虚拟机节点）场景下验证初始化竞争与并发写入行为，形成可复现实验流程。
 \end{enumerate}
+
+\subsection{论文结构安排}\label{ux8bbaux6587ux7ed3ux6784ux5b89ux6392}
+
+全文按``问题提出---方案设计---理论建模---实验验证---结论展望''组织： 1. 第 2 章给出国内外代表系统的代码级调研与缺陷归纳，明确 Optbinlog 的问题边界。 2. 第 3 章说明 Optbinlog 的关键设计、工程实现与迭代路径。 3. 第 4 章建立 \texttt{N} 与 \texttt{D} 驱动下的时间、空间与吞吐模型，并给出可检验预测。 4. 第 5 章按单机、本地多设备、真实多设备模拟与日志量增长扫描四类实验进行验证，并完成理论对照与原因分析。 5. 第 6 章总结结论、说明局限并给出后续优化计划。
 
 \begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
 
@@ -72,9 +76,9 @@
 
 \subsection{调研范围与方法}\label{ux8c03ux7814ux8303ux56f4ux4e0eux65b9ux6cd5}
 
-本章基于官方文档、论文与代码仓库进行调研，聚焦``热路径优化机制''和``可复现实现入口''。
+本章基于官方文档、论文与代码仓库进行调研，聚焦``热路径优化机制''和``可复现实现入口''。 为保证后续章节的横向可比性，调研统一按四个维度展开：数据结构组织、关键算法路径、并发行为特征与工程部署边界。
 
-调研对象： 1. Linux ftrace / kernel ring buffer。 2. LTTng。 3. Zephyr logging subsystem。 4. systemd-journald。 5. NanoLog（USENIX ATC 2018）。 6. RT-Thread ulog。 7. OpenHarmony HiLog Lite。
+调研对象如下： 1. Linux ftrace / kernel ring buffer。 2. LTTng。 3. Zephyr logging subsystem。 4. systemd-journald。 5. NanoLog（USENIX ATC 2018）。 6. RT-Thread ulog。 7. OpenHarmony HiLog Lite。
 
 \subsection{国际代表系统与优化思路（代码级）}\label{ux56fdux9645ux4ee3ux8868ux7cfbux7edfux4e0eux4f18ux5316ux601dux8defux4ee3ux7801ux7ea7}
 
@@ -196,33 +200,33 @@ HiLog Lite 在格式能力上做约束（减少复杂格式），换取更低资
   >{\raggedright\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.1500}}@{}}
 \caption{Optbinlog 与六类 peer 系统对比}\label{tbl:peer-compare}\tabularnewline
 \toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\centering
+\begin{minipage}[t]{\hsize}\centering
 系统
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[t]{\hsize}\raggedright
 核心机制
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[t]{\hsize}\raggedright
 典型使用场景
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[t]{\hsize}\raggedright
 主要优势
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[t]{\hsize}\raggedright
 主要代价
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[t]{\hsize}\raggedright
 与 Optbinlog 的关系
 \end{minipage} \\
 \midrule\noalign{}
 \endfirsthead
 \toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\centering
+\begin{minipage}[t]{\hsize}\centering
 系统
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[t]{\hsize}\raggedright
 核心机制
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[t]{\hsize}\raggedright
 典型使用场景
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[t]{\hsize}\raggedright
 主要优势
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[t]{\hsize}\raggedright
 主要代价
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[t]{\hsize}\raggedright
 与 Optbinlog 的关系
 \end{minipage} \\
 \midrule\noalign{}
@@ -240,7 +244,7 @@ hilog\_lite\_like & 受限字段 + 轻量头 & 资源受限系统日志 & 资源
 
 \subsection{使用场景与工作中心差异}\label{ux4f7fux7528ux573aux666fux4e0eux5de5ux4f5cux4e2dux5fc3ux5deeux5f02}
 
-如表\textasciitilde{}\ref{tbl:peer-compare} 所示，Optbinlog 在设计上更偏向``语义完整、跨进程一致和工程可迁移''的折中路线，因此与追求极限热路径或系统级 tracing 的方案形成了明显分工。
+如表\ref{tbl:peer-compare}所示，Optbinlog 在设计上更偏向``语义完整、跨进程一致和工程可迁移''的折中路线，因此与追求极限热路径或系统级 tracing 的方案形成了明显分工。
 
 \begin{enumerate}
 \def\labelenumi{\arabic{enumi}.}
@@ -261,21 +265,21 @@ hilog\_lite\_like & 受限字段 + 轻量头 & 资源受限系统日志 & 资源
   >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.2727}}@{}}
 \caption{典型优化代码入口与定位}\label{tbl:code-entries}\tabularnewline
 \toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\centering
+\begin{minipage}[t]{\hsize}\centering
 系统
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[t]{\hsize}\raggedright
 关键优化点
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[t]{\hsize}\raggedright
 代码/文档入口
 \end{minipage} \\
 \midrule\noalign{}
 \endfirsthead
 \toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\centering
+\begin{minipage}[t]{\hsize}\centering
 系统
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[t]{\hsize}\raggedright
 关键优化点
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[t]{\hsize}\raggedright
 代码/文档入口
 \end{minipage} \\
 \midrule\noalign{}
@@ -323,7 +327,7 @@ OpenHarmony HiLog Lite & 受限格式降低开销 & \texttt{hiviewdfx\_hilog\_li
   用统一脚本输出 mean/median/p95/std/95\%CI 与 IQR 过滤结果，支持多轮迭代对比。
 \end{enumerate}
 
-\subsection{复现范围与可行性说明（2026-03-05）}\label{ux590dux73b0ux8303ux56f4ux4e0eux53efux884cux6027ux8bf4ux660e2026-03-05}
+\subsection{复现边界与结论适用范围（2026-03-05）}\label{ux590dux73b0ux8fb9ux754cux4e0eux7ed3ux8bbaux9002ux7528ux8303ux56f42026-03-05}
 
 本文按照``代码阅读先行、实验复现跟进''的顺序开展验证工作：
 
@@ -338,7 +342,7 @@ OpenHarmony HiLog Lite & 受限格式降低开销 & \texttt{hiviewdfx\_hilog\_li
   已执行算法级复现：实现 \texttt{nanolog\_like}、\texttt{zephyr\_deferred\_like}、\texttt{ulog\_async\_like}、\texttt{hilog\_lite\_like} 及``语义对齐''版本（第5章给出数据）。
 \end{enumerate}
 
-上述约束已在第5章实验方法中显式记录，以区分``工程可复现边界''与``算法层结论边界''。
+上述约束已在第5章实验方法中显式记录，用于区分``工程可复现边界''与``算法层结论边界''。因此，第5章中的排序结论均在对应口径下成立，不对未覆盖平台作超范围外推。
 
 \begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
 
@@ -359,11 +363,13 @@ OpenHarmony HiLog Lite & 受限格式降低开销 & \texttt{hiviewdfx\_hilog\_li
   对齐嵌入式可部署需求（工程可落地）。
 \end{enumerate}
 
+上述目标在后续章节中分别对应为可测指标：时间目标映射到 \texttt{elapsed/end\_to\_end}，空间目标映射到 \texttt{total\_bytes}，并发目标映射到初始化竞争正确性与节点级稳定性，工程目标映射到跨场景复现与部署可迁移性。
+
 \subsection{事件格式与元数据结构}\label{ux4e8bux4ef6ux683cux5f0fux4e0eux5143ux6570ux636eux7ed3ux6784}
 
 当前 Optbinlog 采用``共享元数据文件 + 进程内共享视图缓存 + 自描述二进制帧 + \texttt{CRC32C(hw)} + string-heavy 场景自动 \texttt{varstr}''的实现方式。
 
-事件定义仍采用 \texttt{(name\textbar{}type\textbar{}bits)} 形式，字段类型简化为 \texttt{L/D/S}：
+事件定义采用 \texttt{(name\textbar{}type\textbar{}bits)} 形式，字段类型简化为 \texttt{L/D/S}：
 
 \begin{enumerate}
 \def\labelenumi{\arabic{enumi}.}
@@ -407,6 +413,8 @@ OpenHarmony HiLog Lite & 受限格式降低开销 & \texttt{hiviewdfx\_hilog\_li
 这些统计量会直接参与写路径中的 \texttt{varstr} 自动决策，因此它们属于当前热路径优化的一部分。
 
 \subsection{写入/读取路径}\label{ux5199ux5165ux8bfbux53d6ux8defux5f84}
+
+写入与读取路径遵循``先判定元数据状态、再执行编码/解码、最后进行一致性校验''的统一流程。
 
 写入路径： 1. 通过 \texttt{acquire\_shared\_view()} 获取共享文件视图；若共享文件未变化，则直接复用进程内缓存的 tag cache。 2. 根据 schema 统计量判断是否启用 \texttt{varstr}；当字符串字段占比高或最大定长字符串字段较大时，默认切换到 \texttt{varstr}。 3. 依据 tag cache 顺序编码 payload。 4. 构造 4 字节自描述帧头，其中同时编码 \texttt{payload\_len}、\texttt{varstr} 标志位和校验类型。 5. 对单条记录计算校验值；默认采用 \texttt{CRC32C(hw)}，仅在硬件不可用时回退到软件实现。 6. 将 \texttt{frame\_header\ +\ payload\ +\ checksum} 写入用户态缓冲区，按批次落盘。
 
@@ -453,7 +461,7 @@ OpenHarmony HiLog Lite & 受限格式降低开销 & \texttt{hiviewdfx\_hilog\_li
   增加并发初始化状态机和 init-race 压力验证，保证共享文件只被单创建者初始化，其余进程或节点复用既有元数据。
 \end{enumerate}
 
-从实现逻辑上看，最关键的三条设计收敛点是：
+综合以上迭代，当前实现可归纳为三条关键收敛点：
 
 \begin{enumerate}
 \def\labelenumi{\arabic{enumi}.}
@@ -483,11 +491,13 @@ OpenHarmony HiLog Lite & 受限格式降低开销 & \texttt{hiviewdfx\_hilog\_li
   多进程/多节点部署：共享 schema、进程内缓存复用和节点级初始化竞争正确性已经形成闭环，因此该设计更贴近真实工程部署。
 \end{enumerate}
 
+因此，第4章将把上述实现行为进一步抽象为 \texttt{A\_m/C\_m/B\_m/W\_m} 等参数形式，便于与第5章实验结果逐项对照。
+
 \begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
 
 \section{理论模型与数学推导}\label{ux7406ux8bbaux6a21ux578bux4e0eux6570ux5b66ux63a8ux5bfc}
 
-本章先做抽象推导，不代入具体事件文件数值。
+本章先做抽象推导，不代入具体事件文件数值。 为保证推导可解释且可验证，本文采用以下前提：在单次统计窗口内事件分布近似稳定；各模式在同一场景下使用一致的输入语义；模型参数以期望意义解释而非单点极值解释。
 
 \subsection{符号定义}\label{ux7b26ux53f7ux5b9aux4e49}
 
@@ -524,7 +534,7 @@ OpenHarmony HiLog Lite & 受限格式降低开销 & \texttt{hiviewdfx\_hilog\_li
 
 \subsection{从算法与数据结构到单条代价}\label{ux4eceux7b97ux6cd5ux4e0eux6570ux636eux7ed3ux6784ux5230ux5355ux6761ux4ee3ux4ef7}
 
-为避免``只看结果不看机制''，先把每种模式拆成操作级成本。
+为避免``只看结果不看机制''，先把每种模式拆成操作级成本。以下表达式均以单条记录期望开销为核心，再扩展到总量关系。
 
 \subsubsection{text}\label{text}
 
@@ -765,7 +775,7 @@ Q_m(N) = \frac{1000N}{T_m(N)} = \frac{1000}{C_m + A_m/N}
 \lim_{N \to \infty} Q_m(N) = \frac{1000}{C_m}
 \]
 
-二阶导在常见参数下为负，表示``先快后慢''的收益递减，这与实验中大 \(N\) 后增益变缓一致。
+在 \(A_m>0\) 与 \(C_m>0\) 条件下，吞吐增速会随 \(N\) 增大而下降，表现为``先快后慢''的收益递减，这与实验中大 \(N\) 后增益变缓一致。
 
 \subsubsection{时间交叉点（binary 何时优于其他模式）}\label{ux65f6ux95f4ux4ea4ux53c9ux70b9binary-ux4f55ux65f6ux4f18ux4e8eux5176ux4ed6ux6a21ux5f0f}
 
@@ -934,309 +944,512 @@ B_{\text{sem}}(\text{bin}) \approx B_{\text{sem}}(\text{nano}) \approx B_{\text{
 
 本章给出的是``由算法与数据结构直接推出的理论趋势''；第5章再代入实测数据检验这些趋势是否成立，以及偏离原因。
 
+\subsection{本章小结}\label{ux672cux7ae0ux5c0fux7ed3}
+
+本章完成了三项工作：一是把不同日志模式统一到可比较的时间与空间参数形式；二是给出 \texttt{N} 与 \texttt{D} 两个核心自变量下的交叉点、峰值点与线性斜率含义；三是建立理论参数与实验指标的映射关系。基于这些结果，第5章将按``单机 -\textgreater{} 本地多设备 -\textgreater{} 真实多设备模拟 -\textgreater{} 日志量扫描''的顺序进行逐层验证。
+
 \begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
 
 \section{实验迭代、对比与理论一致性分析}\label{ux5b9eux9a8cux8fedux4ee3ux5bf9ux6bd4ux4e0eux7406ux8bbaux4e00ux81f4ux6027ux5206ux6790}
 
 \subsection{实验组织与迭代逻辑}\label{ux5b9eux9a8cux7ec4ux7ec7ux4e0eux8fedux4ee3ux903bux8f91}
 
-本章采用``先语义对齐，再模式对照''的方法，避免将语义体量差异误判为实现差异。实验主线分为两层：工程近似层使用 2026-03-09 的 grouped semantic matrix 运行，主要回答``真实系统路径代价如何排序''；严格公平层使用 2026-03-12 的 final aligned suite 运行，统一以 \texttt{text\_semantic\_like\ /\ binary\ /\ peer\ semantic\_like} 为比较对象，覆盖以下三类场景： 1. 单机高负载（single）。 2. 本地多设备模拟（\texttt{D=2,5,10} 扫描）。 3. 模拟真实多设备（多台虚拟机节点）并发（10 节点，每节点一台设备）。
+本章按``实验口径定义 -\textgreater{} 分场景结果 -\textgreater{} 理论对照 -\textgreater{} 原因解释''的顺序展开，避免将语义体量差异误判为实现差异。实验主线分为两层：工程近似层使用 2026-03-09 的 grouped semantic matrix，主要回答``真实系统路径代价如何排序''；严格公平层使用 2026-03-13 的 final aligned suite，统一以 \texttt{text\_semantic\_like\ /\ binary\ /\ peer\ semantic\_like} 为比较对象，覆盖以下三类场景： 1. 单机高负载（single）。 2. 本地多设备模拟（\texttt{D=5,10,20,50} 扫描）。 3. 真实多设备模拟（多台虚拟机节点）并发（\texttt{5/10/15/20} 节点，每节点一台设备）。
 
 此外，本文同步更新了两组初始化竞争结果：本地多进程初始化运行和节点级初始化运行。统计口径统一为 \texttt{mean/median/p95/std/95\%CI}，先执行 IQR（1.5）异常值过滤，再输出时间、空间、吞吐及改进百分比，以保证各组实验可横向比较。
 
-实验数据按用途分成两层。2026-03-09 的 \texttt{grouped\_semantic\_matrix} 主要承担``工程近似对照''角色：\texttt{syslog/ftrace} 组的输入与系统路径较接近真实工程，适合观察系统级路径代价；2026-03-12 的严格语义对齐套件统一使用 \texttt{text\_semantic\_like\ /\ binary\ /\ peer\ semantic\_like}，覆盖 single、local multi-device 和 10 节点真实多设备三类场景，作为本文讨论 \texttt{nanolog/zephyr/ulog/hilog} 四组公平结论的主体证据。消融结果只用于解释原因，不承担主结论角色。
+实验数据按用途分成两层。2026-03-09 的 \texttt{grouped\_semantic\_matrix} 主要承担``工程近似对照''角色：\texttt{syslog/ftrace} 组的输入与系统路径较接近真实工程，适合观察系统级路径代价；2026-03-13 的严格语义对齐套件统一使用 \texttt{text\_semantic\_like\ /\ binary\ /\ peer\ semantic\_like}，覆盖 single、local multi-device（\texttt{D=5,10,20,50}）和真实多设备节点扫描（\texttt{5/10/15/20} 节点）三类场景，作为本文讨论 \texttt{nanolog/zephyr/ulog/hilog} 四组公平结论的主体证据。针对``日志量增加后空间交叉点何时出现''的问题，本文额外新增了 \texttt{N=1～100000} 的空间扫描实验。消融结果只用于解释原因，不承担主结论角色。
+
+为保证分析口径可追溯，本章额外固定``对比对象、运行平台与数据量''三类约束。尤其在真实多设备（多台虚拟机节点）阶段，本轮采用``\textbf{全节点共享同一 \texttt{shared\_eventtag.bin} 格式缓存文件}、节点结果文件独立输出''的方式，重点观察共享元数据在节点级并发中的竞争与收益释放。
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}
+  >{\centering\arraybackslash}p{(\linewidth - 2\tabcolsep) * \real{0.6250}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 2\tabcolsep) * \real{0.3750}}@{}}
+\toprule\noalign{}
+\begin{minipage}[t]{\hsize}\centering
+维度
+\end{minipage} & \begin{minipage}[t]{\hsize}\raggedright
+本文实验口径
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+对比对象 & \texttt{text\_semantic\_like}（文本基线）、\texttt{binary}（Optbinlog 最终路径）、\texttt{peer\ semantic\_like}（\texttt{nanolog/zephyr/ulog/hilog}） \\
+单机/本地多设备平台 & macOS 26.3（Darwin 25.3.0，ARM64） \\
+真实多设备平台 & Lima Ubuntu 24.04 ARM64 虚拟机集群；最多 20 节点；节点 CPU 为 2 vCPU（aarch64） \\
+校验实现与硬件路径 & \texttt{binary} 默认每条记录 \texttt{CRC32C(hw)}；L1 节点 \texttt{aarch64} CPU flags 包含 \texttt{crc32}，基准按 \texttt{-march=armv8-a+crc} 编译 \\
+真实多设备数据量 & 每节点 \texttt{records=20000}；节点规模 \texttt{5/10/15/20}；\texttt{repeats=3}，\texttt{warmup=1} \\
+真实多设备总样本 & 四个语义组 × 三种模式 × 节点扫描后，有效统计样本约 \texttt{36,000,000} 条日志（不含 warmup） \\
+真实多设备总日志字节 & 有效轮次聚合约 \texttt{3.137\ GiB}（按 \texttt{cluster\_total\_bytes} 汇总） \\
+真实多设备空间口径 & 集群总空间；共享格式文档在每个模式下仅计算一次 \\
+空间交叉点附加扫描 & \texttt{records} 从 \texttt{1} 到 \texttt{100000} 共 13 个点；\texttt{repeats=2}；指标为 \texttt{total\_bytes} \\
+\end{longtable}
+}
 
 \subsection{单机高负载：严格语义对齐结果}\label{ux5355ux673aux9ad8ux8d1fux8f7dux4e25ux683cux8bedux4e49ux5bf9ux9f50ux7ed3ux679c}
 
 本节结果来自严格语义对齐套件的合并汇总文件。三类模式统一采用同一 \texttt{eventlogst\_semantic\_*} schema、同一生成器产生的字段值，以及同一平台；其中 \texttt{binary} 采用``共享 schema/tag cache + per-record CRC32C(hw) + string-heavy auto-varstr''的当前实现。
 
 \begin{longtable}[]{@{}
-  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2174}}
-  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2174}}
-  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2174}}
-  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2174}}
-  >{\raggedright\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.1304}}@{}}
+  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.12}}
+  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.18}}
+  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.18}}
+  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.18}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.34}}@{}}
 \caption{单机高负载下 binary 相对 text 的结果}\label{tbl:single-vs-text}\tabularnewline
 \toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\centering
+\begin{minipage}[t]{\hsize}\centering
 分组
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 text 时间\%
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 text 空间\%
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 text 吞吐\%
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[t]{\hsize}\raggedright
 结论
 \end{minipage} \\
 \midrule\noalign{}
 \endfirsthead
 \toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\centering
+\begin{minipage}[t]{\hsize}\centering
 分组
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 text 时间\%
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 text 空间\%
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 text 吞吐\%
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[t]{\hsize}\raggedright
 结论
 \end{minipage} \\
 \midrule\noalign{}
 \endhead
 \bottomrule\noalign{}
 \endlastfoot
-nanolog & +92.13\% & +69.79\% & +1171.80\% & 相对文本路径收益明显 \\
-zephyr & +94.12\% & +72.59\% & +1601.58\% & 相对文本路径收益明显 \\
-ulog & +76.20\% & +43.35\% & +315.72\% & 相对文本路径收益明显 \\
-hilog & +84.07\% & +53.87\% & +527.74\% & 相对文本路径收益明显 \\
+nanolog & +92.95\% & +69.79\% & +1323.93\% & 相对文本路径收益明显 \\
+zephyr & +93.30\% & +72.59\% & +1395.32\% & 相对文本路径收益明显 \\
+ulog & +72.23\% & +43.35\% & +259.89\% & 相对文本路径收益明显 \\
+hilog & +83.16\% & +53.87\% & +493.34\% & 相对文本路径收益明显 \\
 \end{longtable}
 
 \begin{longtable}[]{@{}
-  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2174}}
-  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2174}}
-  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2174}}
-  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2174}}
-  >{\raggedright\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.1304}}@{}}
+  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.12}}
+  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.18}}
+  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.18}}
+  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.18}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.34}}@{}}
 \caption{单机高负载下 binary 相对 peer 的结果}\label{tbl:single-vs-peer}\tabularnewline
 \toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\centering
+\begin{minipage}[t]{\hsize}\centering
 分组
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 peer 时间\%
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 peer 空间\%
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 peer 吞吐\%
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[t]{\hsize}\raggedright
 结论
 \end{minipage} \\
 \midrule\noalign{}
 \endfirsthead
 \toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\centering
+\begin{minipage}[t]{\hsize}\centering
 分组
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 peer 时间\%
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 peer 空间\%
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 peer 吞吐\%
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[t]{\hsize}\raggedright
 结论
 \end{minipage} \\
 \midrule\noalign{}
 \endhead
 \bottomrule\noalign{}
 \endlastfoot
-nanolog & +11.13\% & -30.85\% & +10.51\% & binary 在时间上略快于最短紧凑二进制 peer，但空间仍更大 \\
-zephyr & -12.82\% & -28.66\% & -11.19\% & deferred/batch 热路径仍以更短的记录组织保留时间优势 \\
-ulog & +65.78\% & +33.50\% & +192.21\% & binary 明显优于文本扩展更重的 peer 路径 \\
-hilog & +78.55\% & +48.51\% & +366.23\% & binary 在时间、空间与吞吐三项上均显著占优 \\
+nanolog & +17.92\% & -30.85\% & +22.08\% & 单机场景下已可稳定快于最短紧凑二进制 peer \\
+zephyr & -4.27\% & -28.66\% & -3.80\% & deferred/batch 热路径仍保留轻微时间优势 \\
+ulog & +64.70\% & +33.50\% & +183.22\% & binary 明显优于文本扩展更重的 peer 路径 \\
+hilog & +76.92\% & +48.51\% & +333.29\% & binary 在时间、空间与吞吐三项上均显著占优 \\
 \end{longtable}
 
-如表\textasciitilde{}\ref{tbl:single-vs-text} 和表\textasciitilde{}\ref{tbl:single-vs-peer} 所示，该结果体现出两层清晰结构。第一，\texttt{binary\ vs\ text\_semantic\_like} 在四组上全部为正，说明一旦输入语义完全一致，文本格式化与字符串拼接的代价会稳定拉高 \texttt{text} 路径。第二，\texttt{binary\ vs\ peer\ semantic\_like} 呈现两类分化：\texttt{ulog/hilog} 属于``文本扩展更重''的语义组，binary 的结构化编码优势直接转化为时间、空间和吞吐优势；\texttt{nanolog/zephyr} 则更接近``最短二进制热路径''或``deferred 批处理热路径''，因此 binary 的通用字段遍历与帧组织常数项会更加显性。
+如表\ref{tbl:single-vs-text}和表\ref{tbl:single-vs-peer}所示，该结果体现出两层清晰结构。第一，\texttt{binary\ vs\ text\_semantic\_like} 在四组上全部为正，说明一旦输入语义完全一致，文本格式化与字符串拼接的代价会稳定拉高 \texttt{text} 路径。第二，\texttt{binary\ vs\ peer\ semantic\_like} 呈现两类分化：\texttt{ulog/hilog} 属于``文本扩展更重''的语义组，binary 的结构化编码优势直接转化为时间、空间和吞吐优势；\texttt{zephyr} 仍保留轻微负区，而 \texttt{nanolog} 在单机点位已转入正区，说明在严格对齐输入下，Optbinlog 与极短热路径 peer 的差距已经压缩到可竞争区间。
 
 因此，工程近似层与严格公平层需要分别承担不同问题：前者回答``真实系统路径大致如何排序''，后者回答``在同一 schema、同一字段值、同一平台下，Optbinlog 相对 peer 的本征开销是什么''。
 
 \begin{figure}[H]
 \centering
-\includesvg[width=0.92\linewidth]{./demo/results/final_aligned_suite_20260312_210409/merged/single_aligned_overview.svg}
+\includesvg[width=0.92\linewidth]{./demo/results/final_aligned_suite_sharedtag_20260313_201100/merged/single_aligned_overview.svg}
 \caption{严格语义对齐单机高负载总览图}
 \label{fig:single-aligned-overview}
 \end{figure}
 \begin{figure}[H]
 \centering
-\includesvg[width=0.88\linewidth]{./demo/results/final_aligned_suite_20260312_210409/merged/single_binary_vs_peer.svg}
+\includesvg[width=0.88\linewidth]{./demo/results/final_aligned_suite_sharedtag_20260313_201100/merged/single_binary_vs_peer.svg}
 \caption{严格语义对齐单机场景中 binary 相对 peer 的差值图}
 \label{fig:single-binary-vs-peer}
 \end{figure}
 
 \subsection{本地多设备模拟：竞争项放大后的趋势}\label{ux672cux5730ux591aux8bbeux5907ux6a21ux62dfux7adeux4e89ux9879ux653eux5927ux540eux7684ux8d8bux52bf}
 
-本节结果同样来自 \texttt{final\_aligned\_summary.json}，但切换到 \texttt{multi} 部分，并对 \texttt{D=2,5,10} 进行扫描。该场景保持平台不变，只让设备数增加，因此能够单独观察 \texttt{W\_m(D,r)} 对趋势的影响。
+本节结果同样来自 \texttt{final\_aligned\_summary.json}，但切换到 \texttt{multi} 部分，并对 \texttt{D=5,10,20,50} 进行扫描。该场景保持平台不变，只让设备数增加，因此能够单独观察 \texttt{W\_m(D,r)} 对趋势的影响。
 
 \begin{longtable}[]{@{}
-  >{\centering\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.1786}}
-  >{\centering\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.1786}}
-  >{\centering\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.1786}}
-  >{\centering\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.1786}}
-  >{\centering\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.1786}}
-  >{\raggedright\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.1071}}@{}}
+  >{\centering\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.11}}
+  >{\centering\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.09}}
+  >{\centering\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.14}}
+  >{\centering\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.14}}
+  >{\centering\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.14}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.38}}@{}}
 \caption{本地多设备模拟下 binary 相对 peer 的扫描结果}\label{tbl:multi-vs-peer}\tabularnewline
 \toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\centering
+\begin{minipage}[t]{\hsize}\centering
 分组
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 设备数 D
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 peer 时间\%
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 peer 吞吐\%
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 peer 空间\%
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[t]{\hsize}\raggedright
 现象
 \end{minipage} \\
 \midrule\noalign{}
 \endfirsthead
 \toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\centering
+\begin{minipage}[t]{\hsize}\centering
 分组
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 设备数 D
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 peer 时间\%
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 peer 吞吐\%
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 peer 空间\%
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[t]{\hsize}\raggedright
 现象
 \end{minipage} \\
 \midrule\noalign{}
 \endhead
 \bottomrule\noalign{}
 \endlastfoot
-nanolog & 2 & -6.22\% & -6.49\% & -31.82\% & 竞争项放大后，小优势先被压掉 \\
-nanolog & 5 & -52.65\% & -23.56\% & -31.19\% & 局部最差点位，说明最短热路径对进程竞争最敏感 \\
-nanolog & 10 & +2.47\% & +2.16\% & -30.98\% & 在更高并发下回到近似持平 \\
-zephyr & 2 & +9.94\% & +10.46\% & -29.65\% & 低并发下 binary 仍可略优 \\
-zephyr & 5 & -0.90\% & -1.74\% & -29.00\% & 中负载附近接近交叉点 \\
-zephyr & 10 & +1.55\% & +3.09\% & -28.79\% & 高并发下仍基本处于同一量级 \\
-ulog & 2 & +1.04\% & +1.04\% & +33.30\% & 相对 peer 已转入稳定正区间 \\
-ulog & 5 & +12.22\% & +14.22\% & +33.42\% & 竞争项放大后优势反而更清晰 \\
-ulog & 10 & +15.40\% & +17.39\% & +33.46\% & 对文本扩展型 peer 保持稳定领先 \\
-hilog & 2 & +14.12\% & +13.79\% & +48.28\% & 低并发即显著领先 \\
-hilog & 5 & +20.16\% & +25.29\% & +48.43\% & 中负载优势进一步扩大 \\
-hilog & 10 & +5.73\% & +5.08\% & +48.48\% & 高并发下优势被压缩但未翻转 \\
+nanolog & 5 & +1.73\% & +1.58\% & -31.19\% & 低设备数已可与最短热路径持平并略优 \\
+nanolog & 10 & -3.99\% & -3.82\% & -30.98\% & 受调度与竞争项影响出现小幅回落 \\
+nanolog & 20 & +25.01\% & +10.65\% & -30.87\% & 中高并发点位出现明显正收益 \\
+nanolog & 50 & -10.39\% & -8.63\% & -30.81\% & 高设备数下再次回落，曲线呈非单调形态 \\
+zephyr & 5 & -18.33\% & -15.03\% & -29.00\% & deferred/batch 路径在低设备数仍更稳 \\
+zephyr & 10 & +5.50\% & +5.40\% & -28.79\% & 中等并发出现短暂转正 \\
+zephyr & 20 & +1.49\% & +1.56\% & -28.68\% & 维持零附近微正区间 \\
+zephyr & 50 & -0.27\% & -0.22\% & -28.61\% & 50 设备回到近似持平略负 \\
+ulog & 5 & +13.43\% & +15.47\% & +33.42\% & 低设备数已稳定领先 \\
+ulog & 10 & +2.04\% & +2.34\% & +33.46\% & 优势收敛但保持为正 \\
+ulog & 20 & +4.80\% & +4.97\% & +33.48\% & 中高并发继续稳定正收益 \\
+ulog & 50 & -0.59\% & +1.45\% & +33.50\% & 时间接近持平，吞吐仍略优 \\
+hilog & 5 & +6.71\% & +7.31\% & +48.43\% & 低设备数保持正收益 \\
+hilog & 10 & +5.29\% & +5.59\% & +48.48\% & 中等并发仍稳定为正 \\
+hilog & 20 & -34.19\% & -14.87\% & +48.50\% & 20 设备点位出现明显负跳变 \\
+hilog & 50 & +2.30\% & +2.34\% & +48.52\% & 50 设备恢复到小幅正收益 \\
 \end{longtable}
 
-如表\textasciitilde{}\ref{tbl:multi-vs-peer} 所示，从本地多设备扫描可以看到三类不同的曲线形态。\texttt{ulog/hilog} 组在 \texttt{D=2,5,10} 上始终保持对 peer 的正收益，说明当 peer 路径必须持续做文本扩展时，竞争项会进一步放大其格式化与写出负担；\texttt{zephyr} 组则长期围绕零附近波动，说明 deferred/batch 的摊销能力与 binary 的结构化写出已经非常接近；\texttt{nanolog} 组最敏感，\texttt{D=5} 处出现明显负跳变，到了 \texttt{D=10} 又回到近似持平，这表明对于``热路径极短、空间极紧凑''的 peer，进程调度顺序、共享文件竞争和 run-phase 对齐方式都足以改变排序。
+如表\ref{tbl:multi-vs-peer}所示，本地多设备曲线呈现``分组可分、点位非单调''的形态。\texttt{ulog} 在 \texttt{D=5/10/20} 保持正收益，到 \texttt{D=50} 时间接近持平；\texttt{hilog} 在 \texttt{D=5/10} 为正、\texttt{D=20} 出现局部负跳变、\texttt{D=50} 又恢复到微正；\texttt{nanolog} 在 \texttt{D=5} 与 \texttt{D=20} 为正、\texttt{D=10} 与 \texttt{D=50} 为负，表现为典型的竞争项主导振荡；\texttt{zephyr} 则整体围绕零附近波动并在低设备数保持明显负区。该结果说明在保持语义对齐的前提下，仅增加设备数会显著放大调度竞争与共享路径抖动，局部点位不一定满足单调改善。
 
-与 \texttt{text\_semantic\_like} 的比较也支持这一点：除 \texttt{nanolog} 在 \texttt{D=2,5} 的局部点位外，其余大多数分组上 binary 对 text 都维持正收益。也就是说，多设备场景下真正容易把 binary 拉回负区间的，并不是``文本路径''，而是那些已经把语义压缩到极短热路径的 peer 二进制实现。
+与 \texttt{text\_semantic\_like} 的比较也支持这一点：除 \texttt{nanolog} 在 \texttt{D=5,10} 的局部点位外，其余大多数分组上 binary 对 text 都维持正收益。也就是说，多设备场景下真正容易把 binary 拉回负区间的，并不是``文本路径''，而是那些已经把语义压缩到极短热路径的 peer 二进制实现。
 
 \begin{figure}[H]
 \centering
-\includesvg[width=0.92\linewidth]{./demo/results/final_aligned_suite_20260312_210409/merged/multi_time_scan.svg}
+\includesvg[width=0.92\linewidth]{./demo/results/final_aligned_suite_sharedtag_20260313_201100/merged/multi_time_scan.svg}
 \caption{严格语义对齐本地多设备时间扫描图}
 \label{fig:multi-time-scan}
 \end{figure}
 \begin{figure}[H]
 \centering
-\includesvg[width=0.92\linewidth]{./demo/results/final_aligned_suite_20260312_210409/merged/multi_throughput_scan.svg}
+\includesvg[width=0.92\linewidth]{./demo/results/final_aligned_suite_sharedtag_20260313_201100/merged/multi_throughput_scan.svg}
 \caption{严格语义对齐本地多设备吞吐扫描图}
 \label{fig:multi-throughput-scan}
 \end{figure}
 \begin{figure}[H]
 \centering
-\includesvg[width=0.92\linewidth]{./demo/results/final_aligned_suite_20260312_210409/merged/multi_space_scan.svg}
+\includesvg[width=0.92\linewidth]{./demo/results/final_aligned_suite_sharedtag_20260313_201100/merged/multi_space_scan.svg}
 \caption{严格语义对齐本地多设备空间扫描图}
 \label{fig:multi-space-scan}
 \end{figure}
 
-\subsection{模拟真实多设备（多台虚拟机节点）并发：严格语义对齐结果}\label{ux6a21ux62dfux771fux5b9eux591aux8bbeux5907ux591aux53f0ux865aux62dfux673aux8282ux70b9ux5e76ux53d1ux4e25ux683cux8bedux4e49ux5bf9ux9f50ux7ed3ux679c}
+\subsection{真实多设备模拟（多台虚拟机节点）并发：严格语义对齐结果}\label{ux771fux5b9eux591aux8bbeux5907ux6a21ux62dfux591aux53f0ux865aux62dfux673aux8282ux70b9ux5e76ux53d1ux4e25ux683cux8bedux4e49ux5bf9ux9f50ux7ed3ux679c}
 
-本节结果来自严格对齐套件的 \texttt{l1} 节点结果及其合并汇总，采用 10 个并发节点，每节点一台设备。与本地多设备不同，这一场景在保持语义完全对齐的同时，引入了节点级冷启动、VM 调度噪声和跨节点执行偏移，因此更接近论文中的``工程部署代理场景''。
+本节结果来自严格对齐套件的 \texttt{l1} 节点结果及其合并汇总，采用 \texttt{5/10/15/20} 个并发节点、每节点一台设备的扫描方式。与本地多设备不同，这一场景在保持语义完全对齐的同时，引入了节点级冷启动、VM 调度噪声和跨节点执行偏移，因此更接近论文中的``工程部署代理场景''。本轮额外约束为``全节点共享同一 \texttt{shared\_eventtag.bin} 格式缓存文件''，用于验证共享元数据在节点级并发下的趋势变化。为便于与前文表格保持一致，表\ref{tbl:l1-vs-text}先给出 20 节点最大规模的 \texttt{binary\ vs\ text} 截面，表\ref{tbl:l1-vs-peer}再给出 \texttt{binary\ vs\ peer} 的节点扫描结果。
 
 \begin{longtable}[]{@{}
-  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2000}}
-  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2000}}
-  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2000}}
-  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2000}}
-  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2000}}@{}}
+  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.16}}
+  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.12}}
+  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.24}}
+  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.24}}
+  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.24}}@{}}
 \caption{真实多设备模拟下 binary 相对 text 的结果}\label{tbl:l1-vs-text}\tabularnewline
 \toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\centering
+\begin{minipage}[t]{\hsize}\centering
 分组
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 节点有效数
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 text 时间\%
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 text 空间\%
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 text 吞吐\%
 \end{minipage} \\
 \midrule\noalign{}
 \endfirsthead
 \toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\centering
+\begin{minipage}[t]{\hsize}\centering
 分组
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 节点有效数
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 text 时间\%
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 text 空间\%
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 text 吞吐\%
 \end{minipage} \\
 \midrule\noalign{}
 \endhead
 \bottomrule\noalign{}
 \endlastfoot
-nanolog & 10/10 & +36.97\% & +69.79\% & +72.89\% \\
-zephyr & 10/10 & +58.75\% & +72.59\% & +182.17\% \\
-ulog & 10/10 & +56.52\% & +43.35\% & +174.61\% \\
-hilog & 10/10 & +62.52\% & +53.87\% & +205.85\% \\
+nanolog & 20/20 & +50.30\% & +69.81\% & +128.12\% \\
+zephyr & 20/20 & +55.33\% & +72.61\% & +156.44\% \\
+ulog & 20/20 & +62.12\% & +43.36\% & +191.16\% \\
+hilog & 20/20 & +49.53\% & +53.89\% & +128.91\% \\
 \end{longtable}
 
 \begin{longtable}[]{@{}
-  >{\centering\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.2500}}
-  >{\centering\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.2500}}
-  >{\centering\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.2500}}
-  >{\centering\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.2500}}@{}}
+  >{\centering\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.11}}
+  >{\centering\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.09}}
+  >{\centering\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.14}}
+  >{\centering\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.14}}
+  >{\centering\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.14}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.38}}@{}}
 \caption{真实多设备模拟下 binary 相对 peer 的结果}\label{tbl:l1-vs-peer}\tabularnewline
 \toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\centering
+\begin{minipage}[t]{\hsize}\centering
 分组
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
+节点数
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 peer 时间\%
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 peer 空间\%
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 peer 吞吐\%
+\end{minipage} & \begin{minipage}[t]{\hsize}\raggedright
+现象
 \end{minipage} \\
 \midrule\noalign{}
 \endfirsthead
 \toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\centering
+\begin{minipage}[t]{\hsize}\centering
 分组
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
+节点数
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 peer 时间\%
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 peer 空间\%
-\end{minipage} & \begin{minipage}[b]{\linewidth}\centering
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
 binary 相对 peer 吞吐\%
+\end{minipage} & \begin{minipage}[t]{\hsize}\raggedright
+现象
 \end{minipage} \\
 \midrule\noalign{}
 \endhead
 \bottomrule\noalign{}
 \endlastfoot
-nanolog & -8.21\% & -30.85\% & -19.48\% \\
-zephyr & -79.33\% & -28.66\% & -62.52\% \\
-ulog & +43.94\% & +33.50\% & +99.36\% \\
-hilog & +53.95\% & +48.51\% & +152.27\% \\
+nanolog & 5 & -54.30\% & -30.79\% & -35.33\% & 共享格式文件竞争下，时间与吞吐均落在负区 \\
+nanolog & 10 & -68.59\% & -30.78\% & -39.54\% & 10 节点处达到局部最差点位 \\
+nanolog & 15 & -54.89\% & -30.77\% & -35.14\% & 相比 10 节点出现回收，但仍未转正 \\
+nanolog & 20 & -51.68\% & -30.77\% & -43.32\% & 时间继续回收但吞吐仍为负区 \\
+zephyr & 5 & -155.82\% & -28.59\% & -61.52\% & deferred/batch 路径在节点级并发下明显更优 \\
+zephyr & 10 & -116.63\% & -28.58\% & -62.31\% & 全程深负，未出现收敛到零附近 \\
+zephyr & 15 & -167.80\% & -28.58\% & -59.82\% & 节点增加后持续深负，趋势最不利 \\
+zephyr & 20 & -155.88\% & -28.58\% & -67.59\% & 20 节点仍不具备交叉可能 \\
+ulog & 5 & +53.47\% & +33.51\% & +113.96\% & 低节点数下已稳定领先 \\
+ulog & 10 & +53.95\% & +33.51\% & +118.43\% & 节点增加后保持稳定正收益 \\
+ulog & 15 & +47.57\% & +33.52\% & +120.24\% & 有波动但方向稳定为正 \\
+ulog & 20 & +60.80\% & +33.52\% & +162.85\% & 20 节点下优势再次扩大 \\
+hilog & 5 & +48.96\% & +48.53\% & +98.73\% & 低节点数下显著领先 \\
+hilog & 10 & +55.15\% & +48.53\% & +140.58\% & 中节点规模优势扩大 \\
+hilog & 15 & +49.61\% & +48.53\% & +95.55\% & 波动存在但持续正收益 \\
+hilog & 20 & +49.90\% & +48.53\% & +115.12\% & 20 节点依然稳定领先 \\
 \end{longtable}
 
-如表\textasciitilde{}\ref{tbl:l1-vs-text} 和表\textasciitilde{}\ref{tbl:l1-vs-peer} 所示，真实多设备模拟的结论与单机、本地多设备形成了更完整的三层证据链。首先，binary 相对 \texttt{text\_semantic\_like} 在四组上全部保持明显正收益，说明在节点级并发下，文本格式化仍然是稳定的高开销基线。其次，\texttt{ulog/hilog} 组在真实多设备下仍显著领先 peer，说明其主要矛盾仍是``文本展开和较长记录组织''；节点噪声会压缩优势，但不会改变方向。再次，\texttt{nanolog/zephyr} 两组则表现出更强的边界性：\texttt{nanolog} 从单机的 \texttt{+11.13\%} 退回到真实多设备的 \texttt{-8.21\%}，\texttt{zephyr} 从单机的 \texttt{-12.82\%} 进一步扩大到 \texttt{-79.33\%}。这说明当 peer 本身已经是极短二进制热路径或 deferred 批处理路径时，节点级冷启动、每节点单独创建进程、缓存收益难以完全释放等因素，会让 binary 的通用路径常数项重新显性化。
+如表\ref{tbl:l1-vs-text}和表\ref{tbl:l1-vs-peer}所示，真实多设备模拟的结论与单机、本地多设备形成了更完整的三层证据链。首先，20 节点最大规模下 \texttt{binary\ vs\ text\_semantic\_like} 在四组上全部保持明显正收益，说明在节点级并发下，文本格式化仍然是稳定的高开销基线。其次，\texttt{ulog/hilog} 组在 \texttt{5/10/15/20} 四个点位上始终保持对 peer 的稳定正收益，说明其主要矛盾仍是``文本展开和较长记录组织''。再次，\texttt{nanolog/zephyr} 两组在``全节点共享同一格式缓存文件''口径下均持续为负：\texttt{zephyr} 全程深负且无收敛迹象，\texttt{nanolog} 虽在 15/20 节点出现局部回收，但仍未越过交叉点。这表明在节点级并发与共享文件竞争同时存在时，极短热路径 peer 更容易放大 Optbinlog 的冷路径与通用打包常数项。
 
-因此，``真实多设备下谁更优''并不是单机结论的简单复制，而是对第4章模型中 \texttt{W\_m(D,r)} 与冷路径项 \texttt{A\_m} 的联合验证：\texttt{ulog/hilog} 由文本扩展主导，binary 仍能稳定获益；\texttt{nanolog/zephyr} 则更受热路径长度和摊销粒度控制，因而更容易在节点级并发下失去单机上的微弱优势。
+因此，``真实多设备下谁更优''并不是单机结论的简单复制，而是对第4章模型中 \texttt{W\_m(D,r)} 与冷路径项 \texttt{A\_m} 的联合验证：\texttt{ulog/hilog} 由文本扩展主导，binary 能持续稳定获益；\texttt{zephyr} 由批处理与极短热路径主导，在更高节点数下仍不利于 Optbinlog；\texttt{nanolog} 则体现出``交叉点后移且在共享文件竞争口径下更难提前出现''的边界行为，本轮 5/10/15/20 节点均未转正，但 20 节点相对 10 节点已有回收迹象。
+
+需要说明的是，本节表格里的空间指标统一采用``集群总空间且共享格式文档只计一次''口径，因此不会再出现``共享文档按节点重复累计''的偏差；在该口径下，空间绝对值仍随节点数近似线性增长，与第4章线性空间模型一致。
 
 \begin{figure}[H]
 \centering
-\includesvg[width=0.92\linewidth]{./demo/results/final_aligned_suite_20260312_210409/merged/l1_aligned_overview.svg}
-\caption{严格语义对齐真实多设备总览图}
-\label{fig:l1-overview}
+\includesvg[width=0.92\linewidth]{./demo/results/final_aligned_suite_sharedtag_20260313_201100/merged/l1_node_time_scan.svg}
+\caption{严格语义对齐真实多设备时间扫描图}
+\label{fig:l1-time-scan}
 \end{figure}
 \begin{figure}[H]
 \centering
-\includesvg[width=0.88\linewidth]{./demo/results/final_aligned_suite_20260312_210409/merged/l1_binary_vs_peer.svg}
-\caption{严格语义对齐真实多设备场景中 binary 相对 peer 的差值图}
-\label{fig:l1-binary-vs-peer}
+\includesvg[width=0.92\linewidth]{./demo/results/final_aligned_suite_sharedtag_20260313_201100/merged/l1_node_throughput_scan.svg}
+\caption{严格语义对齐真实多设备吞吐扫描图}
+\label{fig:l1-throughput-scan}
 \end{figure}
+\begin{figure}[H]
+\centering
+\includesvg[width=0.92\linewidth]{./demo/results/final_aligned_suite_sharedtag_20260313_201100/merged/l1_node_space_scan.svg}
+\caption{严格语义对齐真实多设备集群总空间扫描图}
+\label{fig:l1-space-scan}
+\end{figure}
+\begin{figure}[H]
+\centering
+\includesvg[width=0.88\linewidth]{./demo/results/final_aligned_suite_sharedtag_20260313_201100/merged/l1_node_binary_vs_peer_scan.svg}
+\caption{严格语义对齐真实多设备场景中 binary 相对 peer 的节点扫描差值图}
+\label{fig:l1-binary-vs-peer-scan}
+\end{figure}
+
+图\ref{fig:l1-time-scan}、图\ref{fig:l1-throughput-scan} 与图\ref{fig:l1-binary-vs-peer-scan} 共同支持``\texttt{ulog/hilog} 稳定正收益、\texttt{zephyr} 持续深负、\texttt{nanolog} 在共享文件竞争口径下仍未转正''的主结论；图\ref{fig:l1-space-scan} 则给出空间口径的直接证据：当统计对象改为``集群总空间''后，四组曲线均随节点数近似线性增长，与第4章线性空间模型一致。
+
+\subsection{日志数据量增长下的空间交叉点实验}\label{ux65e5ux5fd7ux6570ux636eux91cfux589eux957fux4e0bux7684ux7a7aux95f4ux4ea4ux53c9ux70b9ux5b9eux9a8c}
+
+为了回答``日志量增加到什么程度，Optbinlog 的空间性能会优于其他模式''这一问题，本文在严格语义对齐口径下新增 \texttt{N} 扫描实验：单设备单进程，模式固定为 \texttt{text\_semantic\_like\ /\ binary\ /\ peer\ semantic\_like}，记录数扫描点为 \texttt{1,2,5,10,20,50,100,200,500,1000,5000,20000,100000}，每点 \texttt{repeats=2}、\texttt{warmup=0}，统计指标为 \texttt{total\_bytes} 均值。交叉点定义为``最早满足 \texttt{binary\_bytes\ \textless{}=\ peer\_bytes} 的 \texttt{N}''。
+
+\begin{longtable}[]{@{}
+  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.12}}
+  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.18}}
+  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.18}}
+  >{\centering\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.18}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.34}}@{}}
+\caption{日志数据量扫描下 binary 相对 peer 的空间交叉点结果}\label{tbl:space-crossover}\tabularnewline
+\toprule\noalign{}
+\begin{minipage}[t]{\hsize}\centering
+分组
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
+peer 模式
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
+经验交叉点 \texttt{N*}
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
+线性拟合交叉点
+\end{minipage} & \begin{minipage}[t]{\hsize}\raggedright
+趋势解读
+\end{minipage} \\
+\midrule\noalign{}
+\endfirsthead
+\toprule\noalign{}
+\begin{minipage}[t]{\hsize}\centering
+分组
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
+peer 模式
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
+经验交叉点 \texttt{N*}
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
+线性拟合交叉点
+\end{minipage} & \begin{minipage}[t]{\hsize}\raggedright
+趋势解读
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+nanolog & \texttt{nanolog\_like} & 未出现（至 100000） & \texttt{-54.9} & 在正 \texttt{N} 区间内不出现交叉，binary 空间持续大于 peer \\
+zephyr & \texttt{zephyr\_like} & 未出现（至 100000） & \texttt{-60.6} & 在正 \texttt{N} 区间内不出现交叉，binary 空间持续大于 peer \\
+ulog & \texttt{ulog\_like} & \texttt{10} & \texttt{9.7} & \texttt{N≈10} 即出现交叉，之后 binary 空间持续更优 \\
+hilog & \texttt{hilog\_like} & \texttt{10} & \texttt{8.6} & \texttt{N≈10} 即出现交叉，之后 binary 空间持续更优 \\
+\end{longtable}
+
+如表\ref{tbl:space-crossover}、图\ref{fig:space-records-scan}与图\ref{fig:space-delta-scan}所示，空间维度存在明确分组。\texttt{ulog/hilog} 组在很小日志量（约 10 条）就越过交叉点，说明其 peer 路径在文本展开或记录组织上的增量字节更高；\texttt{nanolog/zephyr} 组在扫描上限 \texttt{N=100000} 仍未出现交叉，说明其 peer 路径的单位记录空间效率在当前 schema 下持续优于 binary。该实验给出了一个可操作的工程结论：若目标场景主要对标 \texttt{ulog/hilog} 风格并且日志量达到 \texttt{N\textgreater{}=10}，Optbinlog 在空间上可预期优于 peer；若对标 \texttt{nanolog/zephyr} 风格，则应优先优化 binary 的单位记录编码开销，再讨论交叉点外推。
+
+\begin{figure}[H]
+\centering
+\includesvg[width=0.92\linewidth]{./demo/results/space_crossover_scan_20260313_201900/space_records_scan.svg}
+\caption{日志数据量扫描下各模式空间曲线图}
+\label{fig:space-records-scan}
+\end{figure}
+\begin{figure}[H]
+\centering
+\includesvg[width=0.92\linewidth]{./demo/results/space_crossover_scan_20260313_201900/space_binary_minus_peer_scan.svg}
+\caption{日志数据量扫描下 binary 相对 peer 的空间差值图}
+\label{fig:space-delta-scan}
+\end{figure}
+
+\subsection{理论推导与实测对照}\label{ux7406ux8bbaux63a8ux5bfcux4e0eux5b9eux6d4bux5bf9ux7167}
+
+综合 5.2～5.5 与第4章模型，可得到五点结论：
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  空间模型与实测一致：\texttt{total\_bytes} 随 \texttt{N} 线性增长，而不同语义组对应不同 \texttt{B\_m}。因此在 \texttt{nanolog/zephyr} 组中，binary 相对 peer 仍保留约 \texttt{28\%～31\%} 的空间劣势；而在 \texttt{ulog/hilog} 组中，binary 则持续节省约 \texttt{33\%～49\%} 的空间。
+\item
+  时间交叉点是``按语义组出现''的，而不是``按模式统一出现''的。\texttt{ulog} 在 single 与真实多设备中保持稳定正收益，本地多设备点位也大多为正；\texttt{hilog} 在 single 与真实多设备稳定为正，但在本地 \texttt{D=20} 出现局部负跳变后于 \texttt{D=50} 回正；\texttt{zephyr} 在本地围绕零附近波动、在真实多节点场景长期深负；\texttt{nanolog} 在单机为正、本地多设备呈正负交替，而在真实多设备 \texttt{5/10/15/20} 节点仍为负但有回收迹象。
+\item
+  竞争项 \texttt{W\_m(D,r)} 在本地多设备与真实多设备场景中都可被直接观察到。本地多设备出现的``点位振荡''与真实多设备出现的``持续负区/持续正区''，共同说明竞争项与冷路径项会在不同平台层级被放大为不同形态：前者更像局部抖动，后者更像结构性偏置。
+\item
+  ``真实多设备''不是简单复制``本地多设备''。L1 场景额外引入了节点级冷启动、VM 调度噪声和每节点新进程启动，因此 \texttt{A\_m} 的占比会明显抬升；这正是 \texttt{zephyr} 更容易在 L1 场景下持续失去优势、\texttt{nanolog} 的交叉点被推迟且尚未在 20 节点内出现，而 \texttt{ulog/hilog} 仍能保持正收益的主要原因。
+\item
+  日志量增长实验进一步给出了空间交叉点阈值：\texttt{ulog/hilog} 在 \texttt{N≈10} 附近即可完成 \texttt{binary\ \textless{}=\ peer} 的空间反超，而 \texttt{nanolog/zephyr} 在 \texttt{N\textless{}=100000} 仍未出现交叉点，说明``空间何时反超''同样是语义组相关结论。
+\end{enumerate}
+
+\subsection{原因分析与消融佐证}\label{ux539fux56e0ux5206ux6790ux4e0eux6d88ux878dux4f50ux8bc1}
+
+为了更直接解释上述三层场景的排序差异，本文继续使用严格公平消融运行作为``原因分析层''，但不再把它作为主体结论数据集。该数据集给出的关键消融结果如下：
+
+\begin{longtable}[]{@{}
+  >{\centering\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.16}}
+  >{\centering\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.42}}
+  >{\centering\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.42}}@{}}
+\caption{消融实验中的冷路径与校验影响}\label{tbl:ablation-prep}\tabularnewline
+\toprule\noalign{}
+分组 & binary 冷路径 prep(ms) & \texttt{binary\_nocrc} 时间改善\% \\
+\midrule\noalign{}
+\endfirsthead
+\toprule\noalign{}
+分组 & binary 冷路径 prep(ms) & \texttt{binary\_nocrc} 时间改善\% \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+nanolog & 0.416 & +8.88\% \\
+zephyr & 0.496 & +2.38\% \\
+ulog & 4.258 & -2.70\% \\
+hilog & 1.722 & +11.77\% \\
+\end{longtable}
+
+\begin{longtable}[]{@{}
+  >{\centering\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.16}}
+  >{\centering\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.42}}
+  >{\centering\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.42}}@{}}
+\caption{消融实验中的字符串编码影响}\label{tbl:ablation-varstr}\tabularnewline
+\toprule\noalign{}
+分组 & \texttt{binary\_varstr} 时间改善\% & \texttt{binary\_nocrc\_varstr} 时间改善\% \\
+\midrule\noalign{}
+\endfirsthead
+\toprule\noalign{}
+分组 & \texttt{binary\_varstr} 时间改善\% & \texttt{binary\_nocrc\_varstr} 时间改善\% \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+nanolog & -0.15\% & +0.98\% \\
+zephyr & -3.03\% & -0.50\% \\
+ulog & +0.84\% & -1.34\% \\
+hilog & +10.72\% & +12.01\% \\
+\end{longtable}
+
+如表\ref{tbl:ablation-prep}和表\ref{tbl:ablation-varstr}所示，结合严格对齐结果与消融结果，可以把原因归纳为四点： 1. \textbf{校验已经不是主导项}：\texttt{binary\_nocrc} 的额外收益仅落在噪声级到 \texttt{11.77\%} 区间，说明当前实现中每条记录校验的热路径成本已经被压缩到可控范围内。 2. \textbf{剩余瓶颈更偏冷路径与通用打包}：\texttt{ulog/hilog} 的 \texttt{prep\_ms} 仍分别达到 \texttt{4.258ms} 与 \texttt{1.722ms}。这解释了为什么 binary 在 \texttt{ulog/hilog} 这类文本扩展型 peer 面前依然有明显优势，但在 \texttt{nanolog/zephyr} 这类极短热路径面前，冷路径和 frame 组织开销会被放大。 3. \textbf{auto-varstr 已成为日常路径的一部分}：\texttt{binary\_varstr} 在 \texttt{ulog/hilog} 组几乎不再额外改善体积，说明 string-heavy schema 下的变长字符串收益已经被当前实现吸收，并直接体现在默认写入路径中。 4. \textbf{L1 场景的负区与回收都是可解释的}：本轮严格对齐套件采用``新进程 + 单次写入''统计口径，因此 shared schema/tag cache 的稳态收益不会在每节点冷启动场景中被完全释放。于是 \texttt{nanolog} 这类单机上略占优势的组，在 5/10/15/20 节点仍处于负区，但在 20 节点相对中段点位已经出现回收；\texttt{ulog/hilog} 因为主要优势来自``避免文本展开''，所以即使在 L1 场景仍能维持明显正收益；\texttt{zephyr} 则说明 batch/deferred 路径在该统计口径下更难被 Optbinlog 追平。
 
 \subsection{初始化竞争说明}\label{ux521dux59cbux5316ux7adeux4e89ux8bf4ux660e}
 
@@ -1248,7 +1461,7 @@ elapsed\_mean = 14.173 ms，p95 = 16.804 ms，create\_success\_mean = 1.0，open
 \def\labelenumi{\arabic{enumi}.}
 \setcounter{enumi}{1}
 \item
-  模拟真实多设备（多台虚拟机节点）初始化竞争。
+  真实多设备模拟（多台虚拟机节点）初始化竞争。
 
   global\_elapsed\_mean = 6419.830 ms，p95 = 6550.884 ms，single\_creator\_mean = 1.0，failed\_nodes\_mean = 0.0。
 \end{enumerate}
@@ -1268,76 +1481,17 @@ elapsed\_mean = 14.173 ms，p95 = 16.804 ms，create\_success\_mean = 1.0，open
 \label{fig:init-race-l1}
 \end{figure}
 
-\subsection{理论推导与实测对照}\label{ux7406ux8bbaux63a8ux5bfcux4e0eux5b9eux6d4bux5bf9ux7167}
-
-综合 5.2\textasciitilde5.4 与第4章模型，可得到四点结论：
-
-\begin{enumerate}
-\def\labelenumi{\arabic{enumi}.}
-\tightlist
-\item
-  空间模型与实测一致：\texttt{total\_bytes} 随 \texttt{N} 线性增长，而不同语义组对应不同 \texttt{B\_m}。因此在 \texttt{nanolog/zephyr} 组中，binary 相对 peer 仍保留约 \texttt{28\%\textasciitilde{}31\%} 的空间劣势；而在 \texttt{ulog/hilog} 组中，binary 则持续节省约 \texttt{33\%\textasciitilde{}49\%} 的空间。
-\item
-  时间交叉点是``按语义组出现''的，而不是``按模式统一出现''的。\texttt{ulog/hilog} 在 single、local multi 和 real multi-node 三层场景中都保持对 peer 的正收益；\texttt{zephyr} 则长期位于负区或零附近；\texttt{nanolog} 则呈现单机略正、多设备局部反转、真实多设备小幅转负的边界形态。
-\item
-  竞争项 \texttt{W\_m(D,r)} 在本地多设备与真实多设备场景中都可被直接观察到。\texttt{nanolog} 在 \texttt{D=5} 的负跳变、\texttt{hilog} 在 \texttt{D=10} 的优势压缩，以及 \texttt{zephyr} 在 L1 场景中的显著回落，都是该竞争项和冷路径项共同放大的体现。
-\item
-  ``真实多设备''不是简单复制``本地多设备''。L1 场景额外引入了节点级冷启动、VM 调度噪声和每节点新进程启动，因此 \texttt{A\_m} 的占比会明显抬升；这正是 \texttt{nanolog/zephyr} 更容易在 L1 场景下失去单机优势，而 \texttt{ulog/hilog} 仍能保持正收益的主要原因。
-\end{enumerate}
-
-\subsection{原因分析与消融佐证}\label{ux539fux56e0ux5206ux6790ux4e0eux6d88ux878dux4f50ux8bc1}
-
-为了更直接解释上述三层场景的排序差异，本文继续使用严格公平消融运行作为``原因分析层''，但不再把它作为主体结论数据集。该数据集给出的关键消融结果如下：
-
-\begin{longtable}[]{@{}ccc@{}}
-\caption{消融实验中的冷路径与校验影响}\label{tbl:ablation-prep}\tabularnewline
-\toprule\noalign{}
-分组 & binary 冷路径 prep(ms) & \texttt{binary\_nocrc} 时间改善\% \\
-\midrule\noalign{}
-\endfirsthead
-\toprule\noalign{}
-分组 & binary 冷路径 prep(ms) & \texttt{binary\_nocrc} 时间改善\% \\
-\midrule\noalign{}
-\endhead
-\bottomrule\noalign{}
-\endlastfoot
-nanolog & 0.416 & +8.88\% \\
-zephyr & 0.496 & +2.38\% \\
-ulog & 4.258 & -2.70\% \\
-hilog & 1.722 & +11.77\% \\
-\end{longtable}
-
-\begin{longtable}[]{@{}ccc@{}}
-\caption{消融实验中的字符串编码影响}\label{tbl:ablation-varstr}\tabularnewline
-\toprule\noalign{}
-分组 & \texttt{binary\_varstr} 时间改善\% & \texttt{binary\_nocrc\_varstr} 时间改善\% \\
-\midrule\noalign{}
-\endfirsthead
-\toprule\noalign{}
-分组 & \texttt{binary\_varstr} 时间改善\% & \texttt{binary\_nocrc\_varstr} 时间改善\% \\
-\midrule\noalign{}
-\endhead
-\bottomrule\noalign{}
-\endlastfoot
-nanolog & -0.15\% & +0.98\% \\
-zephyr & -3.03\% & -0.50\% \\
-ulog & +0.84\% & -1.34\% \\
-hilog & +10.72\% & +12.01\% \\
-\end{longtable}
-
-如表\textasciitilde{}\ref{tbl:ablation-prep} 和表\textasciitilde{}\ref{tbl:ablation-varstr} 所示，结合严格对齐结果与消融结果，可以把原因归纳为四点： 1. \textbf{校验已经不是主导项}：\texttt{binary\_nocrc} 的额外收益仅落在噪声级到 \texttt{11.77\%} 区间，说明当前实现中每条记录校验的热路径成本已经被压缩到可控范围内。 2. \textbf{剩余瓶颈更偏冷路径与通用打包}：\texttt{ulog/hilog} 的 \texttt{prep\_ms} 仍分别达到 \texttt{4.258ms} 与 \texttt{1.722ms}。这解释了为什么 binary 在 \texttt{ulog/hilog} 这类文本扩展型 peer 面前依然有明显优势，但在 \texttt{nanolog/zephyr} 这类极短热路径面前，冷路径和 frame 组织开销会被放大。 3. \textbf{auto-varstr 已成为日常路径的一部分}：\texttt{binary\_varstr} 在 \texttt{ulog/hilog} 组几乎不再额外改善体积，说明 string-heavy schema 下的变长字符串收益已经被当前实现吸收，并直接体现在默认写入路径中。 4. \textbf{L1 场景的反转是可解释的}：本轮严格对齐套件采用``新进程 + 单次写入''统计口径，因此 shared schema/tag cache 的稳态收益不会在每节点冷启动场景中被完全释放。于是 \texttt{nanolog} 这类单机上略占优势的组，在真实多设备场景就可能被重新压回负区；而 \texttt{ulog/hilog} 因为主要优势来自``避免文本展开''，所以即使在 L1 场景仍能维持明显正收益。
-
 \subsection{实验数据组织与证据链}\label{ux5b9eux9a8cux6570ux636eux7ec4ux7ec7ux4e0eux8bc1ux636eux94fe}
 
-为了让实验结论既能覆盖真实路径，又能满足严格公平对照，本文将数据集按用途组织为三类： 1. \textbf{工程近似层}：保留 \texttt{syslog/ftrace} 以及 \texttt{*\_like} 路径，观察真实工程风格系统的整体代价排序。 2. \textbf{严格公平层}：统一使用 \texttt{text\_semantic\_like\ /\ binary\ /\ peer\ semantic\_like}，在相同 schema、相同字段值和相同平台上报告单机、本地多设备与真实多设备结果。 3. \textbf{原因分析层}：保留 \texttt{binary\_hotpath\ /\ binary\_nocrc\ /\ binary\_varstr} 等消融模式，用于解释当前实现中的主要时间来源和空间来源。
+为了让结论形成``可复核、可解释、可外推''的证据链，本文将数据集按用途组织为三类： 1. \textbf{工程近似层}：保留 \texttt{syslog/ftrace} 以及 \texttt{*\_like} 路径，观察真实工程风格系统的整体代价排序。 2. \textbf{严格公平层}：统一使用 \texttt{text\_semantic\_like\ /\ binary\ /\ peer\ semantic\_like}，在相同 schema、相同字段值和相同平台上报告单机、本地多设备与真实多设备结果。 3. \textbf{原因分析层}：保留 \texttt{binary\_hotpath\ /\ binary\_nocrc\ /\ binary\_varstr} 等消融模式，用于解释当前实现中的主要时间来源和空间来源。
 
-其中，工程近似层负责回答``真实系统路径如何排序''，严格公平层负责回答``当前实现与 peer 在同语义下如何分化''，原因分析层负责回答``差异主要来自哪些结构性开销''。三类数据各司其职，避免把部署差异、语义差异和实现差异混在同一张表里。
+其中，工程近似层回答``真实系统路径如何排序''，严格公平层回答``同语义条件下 Optbinlog 与 peer 如何分化''，原因分析层回答``差异主要来自哪些结构性开销''。三类数据分工明确，可避免把部署差异、语义差异与实现差异混写在同一结论中。
 
-因此，论文中关于 \texttt{nanolog/zephyr/ulog/hilog} 四组的公平性结论，由 single、local multi-device 和 real multi-node 三层严格对齐结果共同支撑；工程近似层则作为工程部署视角的补充说明。
+因此，\texttt{nanolog/zephyr/ulog/hilog} 四组的公平结论由 single、本地多设备与真实多设备模拟三层严格对齐结果共同支撑；工程近似层仅承担工程部署视角的补充说明。
 
 \subsection{差异点原因与 Optbinlog 应用优势}\label{ux5deeux5f02ux70b9ux539fux56e0ux4e0e-optbinlog-ux5e94ux7528ux4f18ux52bf}
 
-结合工程近似对照、严格对齐套件和消融结果，可将 \texttt{Optbinlog} 的差异点归纳为三层： 1. \textbf{文本扩展型语义组}：\texttt{ulog/hilog} 的主要矛盾是文本扩展与记录膨胀，因此 binary 在 single、local multi 和 real multi-node 三层场景中都保持稳定优势。这是 Optbinlog 当前最稳的受益区间。 2. \textbf{极短热路径语义组}：\texttt{nanolog/zephyr} 已经把热路径压得很短。对于这类 peer，Optbinlog 的剩余通用开销主要来自 schema 访问、字段遍历、frame 组织和冷启动，因此单机上可以逼近甚至超过 \texttt{nanolog}，但在真实多设备场景中仍可能因为冷路径和节点噪声而回落。 3. \textbf{平台与并发层}：进入真实多设备后，\texttt{W\_m(D,r)} 和冷启动项会把细小常数项放大，因此``单机反超''不应被直接外推为``节点级并发反超''。这也是本文坚持同时报告 single、multi 和 L1 三层结果的原因。
+结合工程近似对照、严格对齐套件和消融结果，可将 \texttt{Optbinlog} 的差异点归纳为三层： 1. \textbf{文本扩展型语义组}：\texttt{ulog} 的主要矛盾是文本扩展与记录膨胀，因此 binary 在 single、local multi 和 real multi-node 三层场景中都保持稳定优势；\texttt{hilog} 在 single 与真实多设备中也保持明显正收益，但在本地高设备数点位会被短记录热路径压缩到近似持平。这仍然是 Optbinlog 当前最稳的受益区间。 2. \textbf{极短热路径语义组}：\texttt{nanolog/zephyr} 已经把热路径压得很短。对于这类 peer，Optbinlog 的剩余通用开销主要来自 schema 访问、字段遍历、frame 组织和冷启动，因此本地多设备会出现更明显的点位振荡，真实多设备 \texttt{5/10/15/20} 节点上仍未越过交叉点；空间扫描进一步说明这两组在 \texttt{N\textless{}=100000} 范围内仍不存在交叉点。 3. \textbf{平台与并发层}：进入真实多设备后，\texttt{W\_m(D,r)} 和冷启动项会把细小常数项放大，因此``单机反超''不应被直接外推为``节点级并发立即反超''。\texttt{nanolog} 在 L1 场景中从深负区逐步回收但尚未转正，正说明 Optbinlog 的交叉点可能后移到更大节点数或更长 steady-state 区间；这也是本文坚持同时报告 single、multi 和 L1 三层结果的原因。
 
 Optbinlog 的应用优势主要体现在： 1. \textbf{跨进程一致性}：共享 schema + 偏移访问保证多进程解码一致，适合网关/边缘设备的多服务部署。 2. \textbf{工程可迁移性}：不依赖编译期代码生成链路，新增日志事件只需更新 schema 文件，适合迭代频繁的业务系统。 3. \textbf{可验证性}：二进制帧包含长度与 per-record CRC32C，损坏检测与回归测试路径清晰，便于工程质量控制。 4. \textbf{对文本型 peer 的稳定优势}：\texttt{ulog/hilog} 三层场景的对齐结果表明，binary 对文本扩展更重的 peer 风格路径具有稳定时间、空间和吞吐优势。 5. \textbf{优化路径清晰}：实验已经把剩余开销收敛到 \texttt{cold-path\ +\ 通用打包路径\ +\ 稳态缓存收益释放不足}，后续优化可以围绕长生命周期进程、steady-state fast path 和批量提交策略展开。
 
@@ -1349,22 +1503,22 @@ Optbinlog 的应用优势主要体现在： 1. \textbf{跨进程一致性}：共
 
 \subsection{工作总结}\label{ux5de5ux4f5cux603bux7ed3}
 
-本文形成了``调研 -\textgreater{} 设计 -\textgreater{} 理论 -\textgreater{} 实验 -\textgreater{} 对照''的完整研究链条：
+本文形成了``调研 -\textgreater{} 设计 -\textgreater{} 建模 -\textgreater{} 验证 -\textgreater{} 解释''的完整研究链条：
 
 \begin{enumerate}
 \def\labelenumi{\arabic{enumi}.}
 \tightlist
 \item
-  调研层：明确了国内外先进日志系统的共性优化手段（deferred、ring buffer、二进制结构化、编译期迁移热路径开销）。
+  调研层：识别了代表系统的共性优化机制（deferred、ring buffer、结构化二进制、热路径迁移）及其适用边界。
 \item
-  设计层：Optbinlog 通过共享格式与偏移访问实现跨进程一致性和低冗余写入。
+  设计层：Optbinlog 通过共享 schema 与偏移访问实现跨进程一致性，并以自描述帧与硬件 CRC32C 保持可校验性。
 \item
-  理论层：推导了 \texttt{N} 与 \texttt{D} 对时间/空间/吞吐的关系，并给出模式差异来源。
+  理论层：建立了 \texttt{N}、\texttt{D} 与时间/空间/吞吐之间的关系模型，给出可检验的交叉点与饱和点预测。
 \item
-  实验层：多轮结果验证了``时间优势与语义体量、并发竞争强相关''的核心结论，并完成了 NanoLog/Zephyr/uLog/HiLog Lite 与 syslog/ftrace 的分组语义对齐对比；工程近似层、严格公平层以及两类初始化竞争结果共同形成了统一证据链。
+  实验层：在 single、本地多设备与真实多设备模拟三层场景完成严格语义对齐验证，并通过初始化竞争和消融实验解释差异来源。
 \end{enumerate}
 
-工程应用层面，Optbinlog 的价值可概括为：在保持语义可解码与 per-record CRC32C 校验能力的前提下，以共享 schema/tag cache 降低多进程与长生命周期服务的重复解析成本，并在真实多节点并发中维持稳定收益；这使其更适合``长期在线运行、版本持续演进''的嵌入式网关与边缘控制器场景。
+从结果上看，\texttt{binary} 相对 \texttt{text} 在四组语义上均为正收益；对 \texttt{ulog/hilog} 的优势在三层场景中总体稳定；空间扫描显示 \texttt{ulog/hilog} 在 \texttt{N≈10} 即出现反超，而 \texttt{nanolog/zephyr} 在 \texttt{N\textless{}=100000} 仍未出现空间交叉。上述结论与第 4 章模型保持一致，说明 Optbinlog 更适合``长期在线、版本持续演进、强调跨进程一致性''的嵌入式网关与边缘控制器场景。
 
 \subsection{当前局限}\label{ux5f53ux524dux5c40ux9650}
 
@@ -1376,37 +1530,16 @@ Optbinlog 的应用优势主要体现在： 1. \textbf{跨进程一致性}：共
 \item
   Linux 实验仍以 VM 为主，尚未覆盖 Raspberry Pi / i.MX 实机。
 \item
-  严格公平语义套件已经扩展到 10 节点 VM 级``真实多设备''模拟，但仍未迁移到真实 ARM 板卡或 bare-metal Linux 实机。
+  严格公平语义套件已经扩展到 20 节点 VM 级``真实多设备''模拟，但仍未迁移到真实 ARM 板卡或 bare-metal Linux 实机。
 \item
   当前严格公平套件采用``新进程 + 单次写入''统计口径，因此新加入的进程内 shared/tag cache 收益只在代码层完成接入，尚未通过长生命周期 steady-state 基准充分量化。
 \item
   缺少 \texttt{perf} 级 CPU 微观指标，暂不能细粒度解释所有异常点。
 \end{enumerate}
 
-\subsection{下一步优化计划}\label{ux4e0bux4e00ux6b65ux4f18ux5316ux8ba1ux5212}
+\subsection{未来展望}\label{ux672aux6765ux5c55ux671b}
 
-\begin{enumerate}
-\def\labelenumi{\arabic{enumi}.}
-\tightlist
-\item
-  \texttt{P0}：继续区分``严格公平层''和``工程近似层''。\\
-  严格公平层统一为 \texttt{text\_semantic\_like\ /\ optbinlog-binary\ /\ peer\ semantic\_like}；工程近似层保留 \texttt{syslog(journald)\ /\ ftrace} 等真实系统路径。两层结论不再混写。
-\item
-  \texttt{P0}：优先优化 \texttt{cold-path\ +\ 通用打包路径}。\\
-  当前实现已采用 CRC32C(hw)，下一步重点不是``去掉 CRC''，而是释放进程内 schema/tag cache 的稳态收益、继续压缩记录物化和字段遍历，并沿用现有消融模式做回归。
-\item
-  \texttt{P1}：补齐平台覆盖。\\
-  至少完成 x86\_64 Linux 与 ARM Linux（Raspberry Pi / i.MX），并把严格公平语义套件原样迁移到新平台。
-\item
-  \texttt{P1}：补齐 CPU 指标。\\
-  加入 \texttt{cycles}、\texttt{context-switch}、\texttt{cache-miss}，进一步验证 \texttt{prep}、字段遍历和打包拷贝的微观代价。
-\item
-  \texttt{P2}：扩展容错实验。\\
-  增加损坏帧、截断帧、恢复过程和校验失败路径统计，并评估``CRC32C / 分段 CRC32C / 可选弱校验''对可靠性的影响。
-\item
-  \texttt{P1}：补齐平台仿真方案。\\
-  在实机不足时，先用``异构 VM + \texttt{tc\ netem} + 不同文件系统镜像''逼近平台差异：例如将 10 节点划分为 \texttt{2C/2G} 与 \texttt{4C/8G} 两组，分别注入不同延迟/丢包，文件系统采用 \texttt{ext4/xfs} 组合；随后把同一套 \texttt{single/multi/模拟真实多设备} 脚本在该仿真环境复跑，并与实机 Raspberry Pi / i.MX 的关键点位做误差标定。该方案可先完成趋势验证，再逐步替换为真实板卡数据。
-\end{enumerate}
+未来工作可从以下方向持续推进： 1. 在更广泛的平台与负载条件下开展验证，进一步提升结论的外部有效性与可迁移性。 2. 在保持语义一致性的前提下继续优化热路径与稳态路径，缩小与极短路径 peer 在特定场景下的差距。 3. 完善日志可靠性与可恢复性评估，形成覆盖损坏、截断与异常恢复过程的系统化证据。 4. 结合更细粒度观测手段（如 CPU 与调度行为分析），建立从机制到性能现象的更强解释闭环。
 
 \begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
 
@@ -1450,21 +1583,13 @@ Optbinlog 的应用优势主要体现在： 1. \textbf{跨进程一致性}：共
 
 \bibitem{ref16} systemd. journald-server.c{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://github.com/systemd/systemd/blob/main/src/journal/journald-server.c}.
 
-\bibitem{ref17} 武汉大学计算机学院. 2024届毕业论文（设计）成绩的评定标准{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://cs.whu.edu.cn/info/1055/43331.htm}.
+\bibitem{ref17} Sigelman B H, Barroso L A, Burrows M, et al.~Dapper, a Large-Scale Distributed Systems Tracing Infrastructure{[}C/OL{]}. Google Research, 2010{[}2026-03-13{]}. \url{https://research.google/pubs/dapper-a-large-scale-distributed-systems-tracing-infrastructure/}.
 
-\bibitem{ref18} 武汉大学计算机学院. 2024年优秀学士学位论文名单公示{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://cs.whu.edu.cn/info/1055/43341.htm}.
+\bibitem{ref18} Cantrill B M, Shapiro M W, Leventhal A H. Dynamic Instrumentation of Production Systems{[}C/OL{]}. Proceedings of USENIX Annual Technical Conference, 2004{[}2026-03-13{]}. \url{https://www.usenix.org/conference/2004-usenix-annual-technical-conference/dynamic-instrumentation-production-systems}.
 
-\bibitem{ref19} 武汉大学本科生院. 关于做好2025届毕业论文（设计）工作的通知{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://uc.whu.edu.cn/info/1520/115631.htm}.
+\bibitem{ref19} Zhu J, He P, Fu Q, et al.~Learning to Log: Helping Developers Make Informed Logging Decisions{[}C/OL{]}. ICSE 2015{[}2026-03-13{]}. \url{https://www.microsoft.com/en-us/research/publication/learning-log-helping-developers-make-informed-logging-decisions/}.
 
-\bibitem{ref20} 武汉大学哲学学院. 2024届优秀毕业论文名单公示{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://philosophy.whu.edu.cn/info/1113/111001.htm}.
-
-\bibitem{ref21} 武汉大学哲学学院. 2025届优秀毕业论文名单公示{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://philosophy.whu.edu.cn/info/1054/119511.htm}.
-
-\bibitem{ref22} 武汉大学电气与自动化学院. 2025届本科毕业设计（论文）答辩工作安排（含优秀论文公示附件）{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://eea.whu.edu.cn/info/1024/4859.htm}.
-
-\bibitem{ref23} 武汉大学社会学院. 2024届本科生毕业论文优秀名单公示{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://shxy.whu.edu.cn/info/1218/77911.htm}.
-
-\bibitem{ref24} 武汉大学社会学院. 2025届本科生毕业论文优秀名单公示{[}EB/OL{]}. {[}2026-03-09{]}. \url{https://shxy.whu.edu.cn/info/1218/84911.htm}.
+\bibitem{ref20} OpenTelemetry. Logs Data Model{[}EB/OL{]}. {[}2026-03-13{]}. \url{https://opentelemetry.io/docs/specs/otel/logs/data-model/}.
 
 \end{thebibliography}
 
@@ -1482,34 +1607,16 @@ Optbinlog 的应用优势主要体现在： 1. \textbf{跨进程一致性}：共
 
 \begin{Shaded}
 \begin{Highlighting}[]
-\CommentTok{\# 1) 全分组语义对齐矩阵（single/multi/模拟真实多设备）}
+\CommentTok{\# 1) 全分组语义对齐矩阵（single/multi/真实多设备模拟）}
 \BuiltInTok{cd}\NormalTok{ demo}
 \ExtensionTok{python3}\NormalTok{ run\_grouped\_semantic\_matrix.py }\DataTypeTok{\textbackslash{}}
   \AttributeTok{{-}{-}out{-}dir} \StringTok{"}\VariableTok{$(}\BuiltInTok{pwd}\VariableTok{)}\StringTok{/results/grouped\_semantic\_matrix\_run\_20260309\_full"}
 
-\CommentTok{\# 2) 最终严格对齐套件（single/multi）}
+\CommentTok{\# 2) 最终严格对齐套件（single/本地多设备/真实多设备 5,10,15,20 节点）}
 \ExtensionTok{python3}\NormalTok{ run\_final\_aligned\_suite.py }\DataTypeTok{\textbackslash{}}
-  \AttributeTok{{-}{-}skip{-}l1} \DataTypeTok{\textbackslash{}}
-  \AttributeTok{{-}{-}out{-}dir} \StringTok{"}\VariableTok{$(}\BuiltInTok{pwd}\VariableTok{)}\StringTok{/results/final\_aligned\_suite\_20260312\_210409"}
+  \AttributeTok{{-}{-}out{-}dir} \StringTok{"}\VariableTok{$(}\BuiltInTok{pwd}\VariableTok{)}\StringTok{/results/final\_aligned\_suite\_hwcrc\_l1\_20260313\_193622"}
 
-\CommentTok{\# 3) 最终严格对齐套件（真实多设备，10 节点）}
-\FunctionTok{zsh}\NormalTok{ run\_final\_aligned\_l1.sh }\DataTypeTok{\textbackslash{}}
-\NormalTok{  nanolog }\StringTok{"}\VariableTok{$(}\BuiltInTok{pwd}\VariableTok{)}\StringTok{/eventlogst\_semantic\_nanolog"}\NormalTok{ nanolog\_semantic\_like }\DataTypeTok{\textbackslash{}}
-  \StringTok{"}\VariableTok{$(}\BuiltInTok{pwd}\VariableTok{)}\StringTok{/results/final\_aligned\_suite\_20260312\_210409/l1/nanolog"}
-\FunctionTok{zsh}\NormalTok{ run\_final\_aligned\_l1.sh }\DataTypeTok{\textbackslash{}}
-\NormalTok{  zephyr }\StringTok{"}\VariableTok{$(}\BuiltInTok{pwd}\VariableTok{)}\StringTok{/eventlogst\_semantic\_zephyr"}\NormalTok{ zephyr\_deferred\_semantic\_like }\DataTypeTok{\textbackslash{}}
-  \StringTok{"}\VariableTok{$(}\BuiltInTok{pwd}\VariableTok{)}\StringTok{/results/final\_aligned\_suite\_20260312\_210409/l1/zephyr"}
-\FunctionTok{zsh}\NormalTok{ run\_final\_aligned\_l1.sh }\DataTypeTok{\textbackslash{}}
-\NormalTok{  ulog }\StringTok{"}\VariableTok{$(}\BuiltInTok{pwd}\VariableTok{)}\StringTok{/eventlogst\_semantic\_ulog"}\NormalTok{ ulog\_semantic\_like }\DataTypeTok{\textbackslash{}}
-  \StringTok{"}\VariableTok{$(}\BuiltInTok{pwd}\VariableTok{)}\StringTok{/results/final\_aligned\_suite\_20260312\_210409/l1/ulog"}
-\FunctionTok{zsh}\NormalTok{ run\_final\_aligned\_l1.sh }\DataTypeTok{\textbackslash{}}
-\NormalTok{  hilog }\StringTok{"}\VariableTok{$(}\BuiltInTok{pwd}\VariableTok{)}\StringTok{/eventlogst\_semantic\_hilog"}\NormalTok{ hilog\_semantic\_like }\DataTypeTok{\textbackslash{}}
-  \StringTok{"}\VariableTok{$(}\BuiltInTok{pwd}\VariableTok{)}\StringTok{/results/final\_aligned\_suite\_20260312\_210409/l1/hilog"}
-\ExtensionTok{python3}\NormalTok{ final\_aligned\_merge\_l1.py }\DataTypeTok{\textbackslash{}}
-  \AttributeTok{{-}{-}summary{-}json} \StringTok{"}\VariableTok{$(}\BuiltInTok{pwd}\VariableTok{)}\StringTok{/results/final\_aligned\_suite\_20260312\_210409/merged/final\_aligned\_summary.json"} \DataTypeTok{\textbackslash{}}
-  \AttributeTok{{-}{-}l1{-}root} \StringTok{"}\VariableTok{$(}\BuiltInTok{pwd}\VariableTok{)}\StringTok{/results/final\_aligned\_suite\_20260312\_210409/l1"}
-
-\CommentTok{\# 4) 本地初始化竞争（10 进程）}
+\CommentTok{\# 3) 本地初始化竞争（10 进程）}
 \FunctionTok{clang} \AttributeTok{{-}O2} \AttributeTok{{-}Wall} \AttributeTok{{-}Wextra} \AttributeTok{{-}std}\OperatorTok{=}\NormalTok{c11 }\AttributeTok{{-}Iinclude} \DataTypeTok{\textbackslash{}}
   \AttributeTok{{-}o}\NormalTok{ optbinlog\_init\_race optbinlog\_init\_race.c }\DataTypeTok{\textbackslash{}}
 \NormalTok{  src/optbinlog\_shared.c src/optbinlog\_eventlog.c}
@@ -1518,7 +1625,7 @@ Optbinlog 的应用优势主要体现在： 1. \textbf{跨进程一致性}：共
 \VariableTok{OPTBINLOG\_INIT\_PROCS}\OperatorTok{=}\NormalTok{10 }\VariableTok{OPTBINLOG\_INIT\_REPEATS}\OperatorTok{=}\NormalTok{20 }\VariableTok{OPTBINLOG\_INIT\_WARMUP}\OperatorTok{=}\NormalTok{3 }\DataTypeTok{\textbackslash{}}
 \ExtensionTok{python3}\NormalTok{ run\_init\_race.py}
 
-\CommentTok{\# 5) 模拟真实多设备节点级初始化竞争（每节点一台设备）}
+\CommentTok{\# 4) 真实多设备模拟节点级初始化竞争（每节点一台设备）}
 \ExtensionTok{python3}\NormalTok{ run\_l1\_init\_compete.py }\DataTypeTok{\textbackslash{}}
   \AttributeTok{{-}{-}config}\NormalTok{ l1\_config.linux\_10\_all\_unaligned\_initrace.json }\DataTypeTok{\textbackslash{}}
   \AttributeTok{{-}{-}tag}\NormalTok{ l1\_init\_compete\_run\_20260309}

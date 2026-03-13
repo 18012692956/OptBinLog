@@ -8,7 +8,9 @@ ROOT = os.path.dirname(__file__)
 EVENTLOG_DIR = os.environ.get("OPTBINLOG_EVENTLOG_DIR", os.path.join(ROOT, "eventlogst"))
 OUT_DIR = os.environ.get("OPTBINLOG_BENCH_OUT_DIR", os.path.join(ROOT, "bench"))
 RUN_DIR = os.path.join(OUT_DIR, "runs")
-SHARED = os.path.join(OUT_DIR, "shared_eventtag.bin")
+# Allow cross-node/process explicit shared metadata path while keeping
+# per-node output files isolated under OUT_DIR.
+SHARED = os.environ.get("OPTBINLOG_SHARED_TAG_PATH", os.path.join(OUT_DIR, "shared_eventtag.bin"))
 RECORDS = int(os.environ.get("OPTBINLOG_BENCH_RECORDS", "20000"))
 REPEATS = int(os.environ.get("OPTBINLOG_BENCH_REPEATS", "20"))
 WARMUP = int(os.environ.get("OPTBINLOG_BENCH_WARMUP", "3"))
