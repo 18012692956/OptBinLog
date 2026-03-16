@@ -143,6 +143,36 @@ def build_references_section(block: str) -> str:
     return "\n\n".join(parts).strip() + "\n"
 
 
+def count_longtable_header_columns(first_head_block: str) -> int | None:
+    top_idx = first_head_block.rfind("\\toprule")
+    mid_idx = first_head_block.rfind("\\midrule")
+    if top_idx < 0 or mid_idx < 0 or mid_idx <= top_idx:
+        return None
+    header_region = first_head_block[top_idx:mid_idx]
+    return len(re.findall(r"(?<!\\)&", header_region)) + 1
+
+
+def add_longtable_continued_labels(body_tex: str) -> str:
+    longtable_pattern = re.compile(r"\\begin{longtable}.*?\\end{longtable}", re.DOTALL)
+
+    def repl(match: re.Match[str]) -> str:
+        block = match.group(0)
+        if "\\endfirsthead" not in block or "\\endhead" not in block:
+            return block
+        if "\\caption{" not in block or "（续表" in block:
+            return block
+        first_head, rest = block.split("\\endfirsthead", 1)
+        continuation_head, tail = rest.split("\\endhead", 1)
+        col_count = count_longtable_header_columns(first_head)
+        if not col_count:
+            return block
+        continued_label = f"\\multicolumn{{{col_count}}}{{r}}{{（续表\\thetable）}} \\\\\n"
+        continuation_head = "\n" + continued_label + continuation_head.lstrip("\n")
+        return first_head + "\\endfirsthead" + continuation_head + "\\endhead" + tail
+
+    return longtable_pattern.sub(repl, body_tex)
+
+
 def normalize_body_latex(body_tex: str) -> str:
     replacements = {
         "\\begin{longtable}[]{@{}lrr@{}}": "\\begin{longtable}[]{@{}\n  >{\\raggedright\\arraybackslash}p{(\\linewidth - 4\\tabcolsep) * \\real{0.18}}\n  >{\\raggedleft\\arraybackslash}p{(\\linewidth - 4\\tabcolsep) * \\real{0.41}}\n  >{\\raggedleft\\arraybackslash}p{(\\linewidth - 4\\tabcolsep) * \\real{0.41}}@{}}",
@@ -155,6 +185,7 @@ def normalize_body_latex(body_tex: str) -> str:
         body_tex = body_tex.replace(src, dst)
     # Keep table header minipages constrained to the column width.
     body_tex = body_tex.replace("\\begin{minipage}[b]{\\linewidth}", "\\begin{minipage}[t]{\\hsize}")
+    body_tex = add_longtable_continued_labels(body_tex)
     return body_tex
 
 
