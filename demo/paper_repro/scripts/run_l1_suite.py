@@ -108,31 +108,7 @@ class NodeExecutor:
 
     def run(self, inner_cmd: str, *, check: bool = True, text: bool = True) -> subprocess.CompletedProcess:
         cmd = self._build_outer_cmd(inner_cmd)
-        proc = None
-        is_lima_prefix = (
-            self.transport == "prefix"
-            and isinstance(self.node.get("prefix"), list)
-            and len(self.node.get("prefix")) > 0
-            and str(self.node.get("prefix")[0]) == "limactl"
-        )
-        max_retry = 8 if is_lima_prefix else 0
-        probe_cmd = None
-        if is_lima_prefix:
-            prefix = [str(x) for x in self.node.get("prefix", [])]
-            probe_cmd = prefix + [self.shell, "-lc", "true"]
-        for attempt in range(max_retry + 1):
-            proc = run_subprocess(cmd, capture=True, text=text, check=False)
-            if proc.returncode == 0:
-                break
-            stderr = proc.stderr or ""
-            # limactl occasionally reports "Bad port '0'" under short bursts.
-            retryable = is_lima_prefix and "Bad port '0'" in stderr
-            if not retryable or attempt >= max_retry:
-                break
-            if probe_cmd is not None:
-                run_subprocess(probe_cmd, capture=True, text=text, check=False)
-            time.sleep(1.2 * (attempt + 1))
-        assert proc is not None
+        proc = run_subprocess(cmd, capture=True, text=text, check=False)
         if check and proc.returncode != 0:
             raise RuntimeError(
                 "node command failed\n"

@@ -788,9 +788,9 @@ static int bench_textlike(const char* mode_name, TextLikeMode mode, const char* 
 static int bench_syslog(const char* eventlog_dir, long records) {
     uint64_t t_e2e0 = now_ns();
 
-    SyslogLineList lines;
-    if (load_syslog_lines(eventlog_dir, &lines) != 0 || lines.len == 0) {
-        fprintf(stderr, "no syslog lines loaded\n");
+    GeneratedRecordSet set;
+    if (build_generated_records(eventlog_dir, records, &set) != 0) {
+        fprintf(stderr, "failed to build semantic records for syslog\n");
         return -1;
     }
 
@@ -805,14 +805,21 @@ static int bench_syslog(const char* eventlog_dir, long records) {
 
     uint64_t t_write0 = now_ns();
     for (long i = 0; i < records; i++) {
-        const char* line = lines.items[(size_t)(i % (long)lines.len)];
+        const OptbinlogTagDef* tag = &set.tags.items[i % (long)set.tags.len];
+        const OptbinlogRecord* rec = &set.recs[i];
+        char line[2048];
+        if (format_record_text_payload(tag, rec, line, sizeof(line)) != 0) {
+            closelog();
+            free_generated_records(&set);
+            return -1;
+        }
         syslog(prio, "%s", line);
         bytes += (uint64_t)strlen(line) + 1;
     }
     uint64_t t_write1 = now_ns();
 
     closelog();
-    syslog_line_list_free(&lines);
+    free_generated_records(&set);
 
     uint64_t t_e2e1 = now_ns();
     double write_ms = (double)(t_write1 - t_write0) / 1e6;
@@ -828,9 +835,9 @@ static int bench_syslog(const char* eventlog_dir, long records) {
 }
 
 static int bench_ftrace(const char* eventlog_dir, long records) {
-    SyslogLineList lines;
-    if (load_syslog_lines(eventlog_dir, &lines) != 0 || lines.len == 0) {
-        fprintf(stderr, "no ftrace lines loaded\n");
+    GeneratedRecordSet set;
+    if (build_generated_records(eventlog_dir, records, &set) != 0) {
+        fprintf(stderr, "failed to build semantic records for ftrace\n");
         return -1;
     }
 
@@ -847,7 +854,7 @@ static int bench_ftrace(const char* eventlog_dir, long records) {
     if (fd < 0) {
         fprintf(stderr, "open trace_marker failed: %s\n", strerror(errno));
         if (tracing_prev == 0) (void)write_tracing_on(tracing_on_path, 0);
-        syslog_line_list_free(&lines);
+        free_generated_records(&set);
         return -1;
     }
 
@@ -863,13 +870,22 @@ static int bench_ftrace(const char* eventlog_dir, long records) {
 
     uint64_t t_write0 = now_ns();
     for (long i = 0; i < records; i++) {
-        const char* line = lines.items[(size_t)(i % (long)lines.len)];
-        char buf[1400];
+        const OptbinlogTagDef* tag = &set.tags.items[i % (long)set.tags.len];
+        const OptbinlogRecord* rec = &set.recs[i];
+        char line[2048];
+        if (format_record_text_payload(tag, rec, line, sizeof(line)) != 0) {
+            close(fd);
+            if (tracing_prev == 0) (void)write_tracing_on(tracing_on_path, 0);
+            free_generated_records(&set);
+            return -1;
+        }
+
+        char buf[4096];
         int nn = snprintf(buf, sizeof(buf), "%s %s", token, line);
         if (nn < 0 || (size_t)nn >= sizeof(buf)) {
             close(fd);
             if (tracing_prev == 0) (void)write_tracing_on(tracing_on_path, 0);
-            syslog_line_list_free(&lines);
+            free_generated_records(&set);
             return -1;
         }
         size_t len = (size_t)nn;
@@ -877,7 +893,7 @@ static int bench_ftrace(const char* eventlog_dir, long records) {
             fprintf(stderr, "write trace_marker failed: %s\n", strerror(errno));
             close(fd);
             if (tracing_prev == 0) (void)write_tracing_on(tracing_on_path, 0);
-            syslog_line_list_free(&lines);
+            free_generated_records(&set);
             return -1;
         }
         bytes_payload += (uint64_t)len + 1;
@@ -886,7 +902,7 @@ static int bench_ftrace(const char* eventlog_dir, long records) {
 
     close(fd);
     if (tracing_prev == 0) (void)write_tracing_on(tracing_on_path, 0);
-    syslog_line_list_free(&lines);
+    free_generated_records(&set);
 
     uint64_t t_e2e1 = now_ns();
     double write_ms = (double)(t_write1 - t_write0) / 1e6;

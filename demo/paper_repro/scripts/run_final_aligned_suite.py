@@ -9,7 +9,6 @@ import shutil
 import statistics
 import subprocess
 import copy
-import time
 from typing import Dict, List
 
 
@@ -21,16 +20,9 @@ PROFILES = [
     {"name": "zephyr", "eventlog_dir": "eventlogst_semantic_zephyr", "peer_mode": "zephyr_deferred_semantic_like"},
     {"name": "ulog", "eventlog_dir": "eventlogst_semantic_ulog", "peer_mode": "ulog_semantic_like"},
     {"name": "hilog", "eventlog_dir": "eventlogst_semantic_hilog", "peer_mode": "hilog_semantic_like"},
-    {"name": "syslog", "eventlog_dir": "eventlogst_semantic_syslog", "peer_mode": "syslog"},
-    # ftrace requires Linux tracefs and elevated execution path; only include in L1.
-    {"name": "ftrace", "eventlog_dir": "eventlogst_semantic_ftrace", "peer_mode": "ftrace", "run_single": False, "run_multi": False, "run_l1": True},
 ]
 
 MAIN_MODES = ["text_semantic_like", "binary"]
-
-
-def profile_enabled(profile: dict, key: str) -> bool:
-    return bool(profile.get(key, True))
 
 
 def l1_bench_build_cmd() -> str:
@@ -72,13 +64,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--l1-records", type=int, default=20000)
     p.add_argument("--l1-repeats", type=int, default=3)
     p.add_argument("--l1-warmup", type=int, default=1)
-    p.add_argument("--l1-retry", type=int, default=2, help="Retry count for each L1 node-scale run when transient node failures occur")
     p.add_argument("--l1-max-workers", type=int, default=10)
     p.add_argument("--l1-start-sync-delay", type=float, default=10.0)
     p.add_argument("--l1-disable-netem", action="store_true", default=True)
-    p.add_argument("--profiles", default="", help="Comma-separated profile names to run (default: all)")
-    p.add_argument("--skip-single", action="store_true", help="Skip single high-load stage")
-    p.add_argument("--skip-multi", action="store_true", help="Skip local multi-device stage")
     p.add_argument("--skip-l1", action="store_true")
     return p.parse_args()
 
@@ -126,20 +114,6 @@ def parse_scale_list(raw: str) -> List[int]:
     if not values:
         raise ValueError("scale list is empty")
     return values
-
-
-def parse_profile_filter(raw: str) -> List[str]:
-    out: List[str] = []
-    seen = set()
-    for part in raw.split(","):
-        name = part.strip()
-        if not name:
-            continue
-        if name in seen:
-            continue
-        seen.add(name)
-        out.append(name)
-    return out
 
 
 def percentile(values: List[float], p: float) -> float:
@@ -224,8 +198,6 @@ def mode_ext(mode: str) -> str:
     return {
         "text_semantic_like": "slog",
         "binary": "bin",
-        "syslog": "syslog",
-        "ftrace": "ftrace",
         "nanolog_semantic_like": "nslog",
         "zephyr_deferred_semantic_like": "zslog",
         "ulog_semantic_like": "uslog",
@@ -450,16 +422,11 @@ def prepare_l1_config(
         node["bench_bin"] = "./optbinlog_bench_linux"
         node["bench_prefix"] = ""
         node["text_profile"] = "semantic"
-        if profile["peer_mode"] == "ftrace":
-            # ftrace writes trace_marker and toggles tracing_on; keep sudo path.
-            node["bench_prefix"] = "sudo -n"
-            node["trace_marker"] = "/sys/kernel/tracing/trace_marker"
         if shared_tag_path:
             node["shared_tag_path"] = shared_tag_path
         else:
             node.pop("shared_tag_path", None)
-        if profile["peer_mode"] != "ftrace":
-            node.pop("trace_marker", None)
+        node.pop("trace_marker", None)
         node.pop("syslog_source", None)
         if args.l1_disable_netem:
             node.pop("netem", None)
@@ -468,16 +435,7 @@ def prepare_l1_config(
 
 
 def run_l1_profile(config_path: str, tag: str) -> str:
-    # Keep L1 node-runner stdout/stderr attached to avoid limactl transient
-    # failures observed when fully buffering nested launcher output.
-    proc = subprocess.run(
-        ["python3", os.path.join(ROOT, "run_l1_suite.py"), "--config", config_path, "--tag", tag],
-        cwd=ROOT,
-        text=True,
-        capture_output=False,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"run_l1_suite failed with exit code {proc.returncode}")
+    run_cmd(["python3", os.path.join(ROOT, "run_l1_suite.py"), "--config", config_path, "--tag", tag], cwd=ROOT)
     return os.path.join(ROOT, "results", tag, "l1_summary.json")
 
 
@@ -601,35 +559,19 @@ def run_l1_scan_profile(profile: dict, out_dir: str, args: argparse.Namespace, t
         if os.path.exists(shared_tag_path):
             os.remove(shared_tag_path)
         prepare_l1_config(args.l1_template, cfg_path, profile, args, node_count, shared_tag_path=shared_tag_path)
-        last_err: Exception = RuntimeError("unknown l1 error")
-        summary = None
+        tag = f"final_aligned_l1_{profile['name']}_{node_count:02d}nodes_{ts}"
+        summary_path = run_l1_profile(cfg_path, tag)
+        src_dir = os.path.join(ROOT, "results", tag)
         dst_dir = os.path.join(out_dir, f"{node_count:02d}_nodes")
-        for attempt in range(0, max(0, int(args.l1_retry)) + 1):
-            tag = f"final_aligned_l1_{profile['name']}_{node_count:02d}nodes_{ts}_a{attempt+1}"
-            try:
-                summary_path = run_l1_profile(cfg_path, tag)
-                src_dir = os.path.join(ROOT, "results", tag)
-                if os.path.exists(dst_dir):
-                    shutil.rmtree(dst_dir)
-                shutil.copytree(src_dir, dst_dir)
-                summary = extract_l1_profile(summary_path, profile)
-                if summary["nodes_ok"] != node_count or summary["nodes_used"] != node_count:
-                    raise RuntimeError(
-                        f"incomplete l1 run for {profile['name']} at {node_count} nodes: "
-                        f"ok={summary['nodes_ok']} used={summary['nodes_used']} total={summary['nodes_total']}"
-                    )
-                break
-            except Exception as e:
-                last_err = e
-                if attempt >= int(args.l1_retry):
-                    raise
-                print(
-                    f"[retry] l1 {profile['name']} {node_count}nodes attempt {attempt+1} failed: {e}. retrying..."
-                )
-                # limactl/ssh sessions may transiently flap under burst workloads.
-                time.sleep(6.0)
-        if summary is None:
-            raise last_err
+        if os.path.exists(dst_dir):
+            shutil.rmtree(dst_dir)
+        shutil.copytree(src_dir, dst_dir)
+        summary = extract_l1_profile(summary_path, profile)
+        if summary["nodes_ok"] != node_count or summary["nodes_used"] != node_count:
+            raise RuntimeError(
+                f"incomplete l1 run for {profile['name']} at {node_count} nodes: "
+                f"ok={summary['nodes_ok']} used={summary['nodes_used']} total={summary['nodes_total']}"
+            )
         summary["nodes"] = node_count
         summary["source_dir"] = dst_dir
         save_json(os.path.join(dst_dir, "l1_extracted.json"), summary)
@@ -720,14 +662,10 @@ def build_single_overview_svg(rows: List[dict], out_path: str) -> None:
 
 
 def build_multi_svg(rows: List[dict], out_path: str, metric_key: str, title: str, unit: str) -> None:
-    if not rows:
-        return
     width = 1600
+    height = 680
     margin = 80
     panel_gap = 30
-    row_gap = 270
-    grid_rows = max(1, math.ceil(len(rows) / 2))
-    height = max(680, 100 + (grid_rows - 1) * row_gap + 220 + 90)
     panel_w = (width - margin * 2 - panel_gap) / 2.0
     panel_h = 220
     colors = {"text_semantic_like": "#7f7f7f", "binary": "#1f78b4", "peer": "#e31a1c"}
@@ -738,7 +676,7 @@ def build_multi_svg(rows: List[dict], out_path: str, metric_key: str, title: str
 
     for pi, row in enumerate(rows):
         x0 = margin + (pi % 2) * (panel_w + panel_gap)
-        y0 = 100 + (pi // 2) * row_gap
+        y0 = 100 + (pi // 2) * 270
         peer = row["peer_mode"]
         xs = [float(sc["devices"]) for sc in row["multi"]["scenarios"]]
         ys = []
@@ -952,14 +890,10 @@ def build_l1_overview_svg(rows: List[dict], out_path: str) -> None:
 
 
 def build_l1_scan_svg(rows: List[dict], out_path: str, metric_key: str, title: str, unit: str) -> None:
-    if not rows:
-        return
     width = 1600
+    height = 680
     margin = 80
     panel_gap = 30
-    row_gap = 270
-    grid_rows = max(1, math.ceil(len(rows) / 2))
-    height = max(680, 100 + (grid_rows - 1) * row_gap + 220 + 90)
     panel_w = (width - margin * 2 - panel_gap) / 2.0
     panel_h = 220
     colors = {"text_semantic_like": "#7f7f7f", "binary": "#1f78b4", "peer": "#e31a1c"}
@@ -970,7 +904,7 @@ def build_l1_scan_svg(rows: List[dict], out_path: str, metric_key: str, title: s
 
     for pi, row in enumerate(rows):
         x0 = margin + (pi % 2) * (panel_w + panel_gap)
-        y0 = 100 + (pi // 2) * row_gap
+        y0 = 100 + (pi // 2) * 270
         peer = row["peer_mode"]
         xs = [float(sc["nodes"]) for sc in row["l1_scan"]["scenarios"]]
         ys = []
@@ -1032,14 +966,10 @@ def build_l1_scan_svg(rows: List[dict], out_path: str, metric_key: str, title: s
 
 
 def build_l1_scan_delta_svg(rows: List[dict], out_path: str, title: str) -> None:
-    if not rows:
-        return
     width = 1600
+    height = 680
     margin = 80
     panel_gap = 30
-    row_gap = 270
-    grid_rows = max(1, math.ceil(len(rows) / 2))
-    height = max(680, 100 + (grid_rows - 1) * row_gap + 220 + 90)
     panel_w = (width - margin * 2 - panel_gap) / 2.0
     panel_h = 220
     metrics = [
@@ -1054,7 +984,7 @@ def build_l1_scan_delta_svg(rows: List[dict], out_path: str, title: str) -> None
 
     for pi, row in enumerate(rows):
         x0 = margin + (pi % 2) * (panel_w + panel_gap)
-        y0 = 100 + (pi // 2) * row_gap
+        y0 = 100 + (pi // 2) * 270
         peer = row["peer_mode"]
         xs = [float(sc["nodes"]) for sc in row["l1_scan"]["scenarios"]]
         delta_series = {key: [] for key, _, _, _ in metrics}
@@ -1110,17 +1040,12 @@ def build_l1_scan_delta_svg(rows: List[dict], out_path: str, title: str) -> None
 
 
 def build_report(rows: List[dict], out_path: str, include_l1: bool) -> None:
-    single_rows = [r for r in rows if "single" in r]
-    multi_rows = [r for r in rows if "multi" in r]
-    l1_rows = [r for r in rows if "l1" in r]
-    l1_scan_rows = [r for r in rows if "l1_scan" in r]
-
     lines: List[str] = []
     lines.append("# Final Aligned Comparison Report")
     lines.append("")
     lines.append("## Comparison Design")
     lines.append("")
-    lines.append("- Modes: `text_semantic_like`, final `binary`, `peer mode` (semantic_like or system path)")
+    lines.append("- Modes: `text_semantic_like`, final `binary`, `peer semantic_like`")
     lines.append("- Binary definition: cached schema/tag cache + per-record CRC32C(hw) + auto-varstr on string-heavy schemas")
     lines.append("- Fairness controls: same schema, same generated values, same platform within each category")
     lines.append("- Categories: single high-load, local multi-device simulation, real-device simulation (multi-VM nodes)")
@@ -1128,58 +1053,56 @@ def build_report(rows: List[dict], out_path: str, include_l1: bool) -> None:
     lines.append("- Visuals: single overview + direct binary-vs-peer deltas; multi-device time/throughput/space scans; real-device overview + direct deltas")
     lines.append("")
 
-    if single_rows:
-        lines.append("## Single High-Load")
+    lines.append("## Single High-Load")
+    lines.append("")
+    lines.append("| profile | binary vs text time% | binary vs peer time% | binary vs text size% | binary vs peer size% | binary vs text thr% | binary vs peer thr% |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|")
+    for row in rows:
+        s = row["single"]["summary"]
+        peer = row["peer_mode"]
+        bt = float(s["binary"]["end_to_end_ms"]["mean"])
+        tt = float(s["text_semantic_like"]["end_to_end_ms"]["mean"])
+        pt = float(s[peer]["end_to_end_ms"]["mean"])
+        bb = float(s["binary"]["total_bytes"]["mean"])
+        tb = float(s["text_semantic_like"]["total_bytes"]["mean"])
+        pb = float(s[peer]["total_bytes"]["mean"])
+        bq = float(s["binary"]["throughput_e2e_rps"]["mean"])
+        tq = float(s["text_semantic_like"]["throughput_e2e_rps"]["mean"])
+        pq = float(s[peer]["throughput_e2e_rps"]["mean"])
+        lines.append(
+            f"| {row['profile']} | {pct_improve(tt, bt, False):+.2f}% | {pct_improve(pt, bt, False):+.2f}% | "
+            f"{pct_improve(tb, bb, False):+.2f}% | {pct_improve(pb, bb, False):+.2f}% | "
+            f"{pct_improve(tq, bq, True):+.2f}% | {pct_improve(pq, bq, True):+.2f}% |"
+        )
+    lines.append("")
+
+    lines.append("## Multi-Device Simulation")
+    lines.append("")
+    for row in rows:
+        peer = row["peer_mode"]
+        lines.append(f"### {row['profile']}")
         lines.append("")
-        lines.append("| profile | binary vs text time% | binary vs peer time% | binary vs text size% | binary vs peer size% | binary vs text thr% | binary vs peer thr% |")
-        lines.append("|---|---:|---:|---:|---:|---:|---:|")
-        for row in single_rows:
-            s = row["single"]["summary"]
-            peer = row["peer_mode"]
-            bt = float(s["binary"]["end_to_end_ms"]["mean"])
-            tt = float(s["text_semantic_like"]["end_to_end_ms"]["mean"])
-            pt = float(s[peer]["end_to_end_ms"]["mean"])
-            bb = float(s["binary"]["total_bytes"]["mean"])
-            tb = float(s["text_semantic_like"]["total_bytes"]["mean"])
-            pb = float(s[peer]["total_bytes"]["mean"])
-            bq = float(s["binary"]["throughput_e2e_rps"]["mean"])
-            tq = float(s["text_semantic_like"]["throughput_e2e_rps"]["mean"])
-            pq = float(s[peer]["throughput_e2e_rps"]["mean"])
+        lines.append("| devices | binary vs text time% | binary vs peer time% | binary vs text thr% | binary vs peer thr% |")
+        lines.append("|---|---:|---:|---:|---:|")
+        for sc in row["multi"]["scenarios"]:
+            text_t = float(sc["summary"]["text_semantic_like"]["elapsed_ms"]["mean"])
+            bin_t = float(sc["summary"]["binary"]["elapsed_ms"]["mean"])
+            peer_t = float(sc["summary"][peer]["elapsed_ms"]["mean"])
+            text_q = float(sc["summary"]["text_semantic_like"]["throughput_rps"]["mean"])
+            bin_q = float(sc["summary"]["binary"]["throughput_rps"]["mean"])
+            peer_q = float(sc["summary"][peer]["throughput_rps"]["mean"])
             lines.append(
-                f"| {row['profile']} | {pct_improve(tt, bt, False):+.2f}% | {pct_improve(pt, bt, False):+.2f}% | "
-                f"{pct_improve(tb, bb, False):+.2f}% | {pct_improve(pb, bb, False):+.2f}% | "
-                f"{pct_improve(tq, bq, True):+.2f}% | {pct_improve(pq, bq, True):+.2f}% |"
+                f"| {sc['devices']} | {pct_improve(text_t, bin_t, False):+.2f}% | {pct_improve(peer_t, bin_t, False):+.2f}% | "
+                f"{pct_improve(text_q, bin_q, True):+.2f}% | {pct_improve(peer_q, bin_q, True):+.2f}% |"
             )
         lines.append("")
 
-    if multi_rows:
-        lines.append("## Multi-Device Simulation")
-        lines.append("")
-        for row in multi_rows:
-            peer = row["peer_mode"]
-            lines.append(f"### {row['profile']}")
-            lines.append("")
-            lines.append("| devices | binary vs text time% | binary vs peer time% | binary vs text thr% | binary vs peer thr% |")
-            lines.append("|---|---:|---:|---:|---:|")
-            for sc in row["multi"]["scenarios"]:
-                text_t = float(sc["summary"]["text_semantic_like"]["elapsed_ms"]["mean"])
-                bin_t = float(sc["summary"]["binary"]["elapsed_ms"]["mean"])
-                peer_t = float(sc["summary"][peer]["elapsed_ms"]["mean"])
-                text_q = float(sc["summary"]["text_semantic_like"]["throughput_rps"]["mean"])
-                bin_q = float(sc["summary"]["binary"]["throughput_rps"]["mean"])
-                peer_q = float(sc["summary"][peer]["throughput_rps"]["mean"])
-                lines.append(
-                    f"| {sc['devices']} | {pct_improve(text_t, bin_t, False):+.2f}% | {pct_improve(peer_t, bin_t, False):+.2f}% | "
-                    f"{pct_improve(text_q, bin_q, True):+.2f}% | {pct_improve(peer_q, bin_q, True):+.2f}% |"
-                )
-            lines.append("")
-
-    if include_l1 and l1_rows:
+    if include_l1:
         lines.append("## Real-Device Simulation (Multi-VM Nodes)")
         lines.append("")
         lines.append("| profile | nodes ok/total | binary vs text time% | binary vs peer time% | binary vs text size% | binary vs peer size% | binary vs text thr% | binary vs peer thr% |")
         lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
-        for row in l1_rows:
+        for row in rows:
             l1 = row["l1"]
             peer = row["peer_mode"]
             bt = float(l1["modes"]["binary"]["time_ms"]["mean"])
@@ -1197,29 +1120,28 @@ def build_report(rows: List[dict], out_path: str, include_l1: bool) -> None:
                 f"{pct_improve(tq, bq, True):+.2f}% | {pct_improve(pq, bq, True):+.2f}% |"
             )
         lines.append("")
-        if l1_scan_rows:
-            lines.append("## Real-Device Node-Scale Scan")
+        lines.append("## Real-Device Node-Scale Scan")
+        lines.append("")
+        for row in rows:
+            peer = row["peer_mode"]
+            lines.append(f"### {row['profile']}")
             lines.append("")
-            for row in l1_scan_rows:
-                peer = row["peer_mode"]
-                lines.append(f"### {row['profile']}")
-                lines.append("")
-                lines.append("| nodes | binary vs text time% | binary vs peer time% | binary vs text thr% | binary vs peer thr% | binary vs peer size% |")
-                lines.append("|---|---:|---:|---:|---:|---:|")
-                for sc in row["l1_scan"]["scenarios"]:
-                    text_t = float(sc["modes"]["text_semantic_like"]["time_ms"]["mean"])
-                    bin_t = float(sc["modes"]["binary"]["time_ms"]["mean"])
-                    peer_t = float(sc["modes"][peer]["time_ms"]["mean"])
-                    text_q = float(sc["modes"]["text_semantic_like"]["throughput_rps"]["mean"])
-                    bin_q = float(sc["modes"]["binary"]["throughput_rps"]["mean"])
-                    peer_q = float(sc["modes"][peer]["throughput_rps"]["mean"])
-                    peer_b = float(sc["modes"][peer]["bytes"]["mean"])
-                    bin_b = float(sc["modes"]["binary"]["bytes"]["mean"])
-                    lines.append(
-                        f"| {sc['nodes']} | {pct_improve(text_t, bin_t, False):+.2f}% | {pct_improve(peer_t, bin_t, False):+.2f}% | "
-                        f"{pct_improve(text_q, bin_q, True):+.2f}% | {pct_improve(peer_q, bin_q, True):+.2f}% | {pct_improve(peer_b, bin_b, False):+.2f}% |"
-                    )
-                lines.append("")
+            lines.append("| nodes | binary vs text time% | binary vs peer time% | binary vs text thr% | binary vs peer thr% | binary vs peer size% |")
+            lines.append("|---|---:|---:|---:|---:|---:|")
+            for sc in row["l1_scan"]["scenarios"]:
+                text_t = float(sc["modes"]["text_semantic_like"]["time_ms"]["mean"])
+                bin_t = float(sc["modes"]["binary"]["time_ms"]["mean"])
+                peer_t = float(sc["modes"][peer]["time_ms"]["mean"])
+                text_q = float(sc["modes"]["text_semantic_like"]["throughput_rps"]["mean"])
+                bin_q = float(sc["modes"]["binary"]["throughput_rps"]["mean"])
+                peer_q = float(sc["modes"][peer]["throughput_rps"]["mean"])
+                peer_b = float(sc["modes"][peer]["bytes"]["mean"])
+                bin_b = float(sc["modes"]["binary"]["bytes"]["mean"])
+                lines.append(
+                    f"| {sc['nodes']} | {pct_improve(text_t, bin_t, False):+.2f}% | {pct_improve(peer_t, bin_t, False):+.2f}% | "
+                    f"{pct_improve(text_q, bin_q, True):+.2f}% | {pct_improve(peer_q, bin_q, True):+.2f}% | {pct_improve(peer_b, bin_b, False):+.2f}% |"
+                )
+            lines.append("")
 
     lines.append("## Interpretation Summary")
     lines.append("")
@@ -1233,14 +1155,6 @@ def build_report(rows: List[dict], out_path: str, include_l1: bool) -> None:
 
 def main() -> None:
     args = parse_args()
-    selected_profiles = PROFILES
-    chosen = parse_profile_filter(args.profiles)
-    if chosen:
-        all_names = {p["name"] for p in PROFILES}
-        bad = [x for x in chosen if x not in all_names]
-        if bad:
-            raise RuntimeError(f"unknown profiles: {bad}")
-        selected_profiles = [p for p in PROFILES if p["name"] in set(chosen)]
     ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     out_root = args.out_dir.strip() or os.path.join(RESULTS_ROOT, f"final_aligned_suite_{ts}")
     single_root = os.path.join(out_root, "single")
@@ -1253,24 +1167,19 @@ def main() -> None:
     os.makedirs(merged_root, exist_ok=True)
 
     rows = []
-    for profile in selected_profiles:
-        row = {"profile": profile["name"], "peer_mode": profile["peer_mode"]}
-        if (not args.skip_single) and profile_enabled(profile, "run_single"):
-            single_out = os.path.join(single_root, profile["name"])
-            ensure_clean_dir(single_out)
-            row["single"] = run_single_profile(profile, single_out, args)
-        if (not args.skip_multi) and profile_enabled(profile, "run_multi"):
-            multi_out = os.path.join(multi_root, profile["name"])
-            ensure_clean_dir(multi_out)
-            row["multi"] = run_multi_profile(profile, multi_out, args)
-        rows.append(row)
+    for profile in PROFILES:
+        single_out = os.path.join(single_root, profile["name"])
+        multi_out = os.path.join(multi_root, profile["name"])
+        ensure_clean_dir(single_out)
+        ensure_clean_dir(multi_out)
+        single = run_single_profile(profile, single_out, args)
+        multi = run_multi_profile(profile, multi_out, args)
+        rows.append({"profile": profile["name"], "peer_mode": profile["peer_mode"], "single": single, "multi": multi})
 
     include_l1 = not args.skip_l1
     if include_l1:
         for row in rows:
-            profile = next(p for p in selected_profiles if p["name"] == row["profile"])
-            if not profile_enabled(profile, "run_l1"):
-                continue
+            profile = next(p for p in PROFILES if p["name"] == row["profile"])
             dst_dir = os.path.join(l1_root, profile["name"])
             ensure_clean_dir(dst_dir)
             row["l1_scan"] = run_l1_scan_profile(profile, dst_dir, args, ts)
@@ -1279,50 +1188,38 @@ def main() -> None:
     summary_path = os.path.join(merged_root, "final_aligned_summary.json")
     save_json(summary_path, {"generated_at": ts, "rows": rows})
 
-    single_rows = [r for r in rows if "single" in r]
-    multi_rows = [r for r in rows if "multi" in r]
-    l1_stage_rows = [r for r in rows if "l1" in r]
-    l1_scan_rows = [r for r in rows if "l1_scan" in r]
-
-    single_svg = None
-    single_delta_svg = None
-    multi_time_svg = None
-    multi_thr_svg = None
-    multi_space_svg = None
-    if single_rows:
-        single_svg = os.path.join(merged_root, "single_aligned_overview.svg")
-        build_single_overview_svg(single_rows, single_svg)
-        single_delta_svg = os.path.join(merged_root, "single_binary_vs_peer.svg")
-        build_direct_delta_svg(single_rows, "single", single_delta_svg, "Strict Aligned Single: Final Binary vs Peer")
-    if multi_rows:
-        multi_time_svg = os.path.join(merged_root, "multi_time_scan.svg")
-        build_multi_svg(multi_rows, multi_time_svg, "elapsed_ms", "Strict Aligned Multi-Device Time Scan", "ms")
-        multi_thr_svg = os.path.join(merged_root, "multi_throughput_scan.svg")
-        build_multi_svg(multi_rows, multi_thr_svg, "throughput_rps", "Strict Aligned Multi-Device Throughput Scan", "records/s")
-        multi_space_svg = os.path.join(merged_root, "multi_space_scan.svg")
-        build_multi_svg(multi_rows, multi_space_svg, "total_bytes", "Strict Aligned Multi-Device Space Scan", "bytes")
+    single_svg = os.path.join(merged_root, "single_aligned_overview.svg")
+    build_single_overview_svg(rows, single_svg)
+    single_delta_svg = os.path.join(merged_root, "single_binary_vs_peer.svg")
+    build_direct_delta_svg(rows, "single", single_delta_svg, "Strict Aligned Single: Final Binary vs Peer")
+    multi_time_svg = os.path.join(merged_root, "multi_time_scan.svg")
+    build_multi_svg(rows, multi_time_svg, "elapsed_ms", "Strict Aligned Multi-Device Time Scan", "ms")
+    multi_thr_svg = os.path.join(merged_root, "multi_throughput_scan.svg")
+    build_multi_svg(rows, multi_thr_svg, "throughput_rps", "Strict Aligned Multi-Device Throughput Scan", "records/s")
+    multi_space_svg = os.path.join(merged_root, "multi_space_scan.svg")
+    build_multi_svg(rows, multi_space_svg, "total_bytes", "Strict Aligned Multi-Device Space Scan", "bytes")
     l1_svg = None
     l1_delta_svg = None
-    if include_l1 and l1_stage_rows:
-        l1_rows = [row["l1"] for row in l1_stage_rows]
+    if include_l1:
+        l1_rows = [row["l1"] for row in rows]
         l1_svg = os.path.join(merged_root, "l1_aligned_overview.svg")
         build_l1_overview_svg(l1_rows, l1_svg)
         l1_delta_svg = os.path.join(merged_root, "l1_binary_vs_peer.svg")
-        build_direct_delta_svg(l1_stage_rows, "l1", l1_delta_svg, "Strict Aligned Real-Device: Final Binary vs Peer")
+        build_direct_delta_svg(rows, "l1", l1_delta_svg, "Strict Aligned Real-Device: Final Binary vs Peer")
         l1_time_scan_svg = os.path.join(merged_root, "l1_node_time_scan.svg")
-        build_l1_scan_svg(l1_scan_rows, l1_time_scan_svg, "time_ms", "Strict Aligned Real-Device Time Scan", "ms")
+        build_l1_scan_svg(rows, l1_time_scan_svg, "time_ms", "Strict Aligned Real-Device Time Scan", "ms")
         l1_thr_scan_svg = os.path.join(merged_root, "l1_node_throughput_scan.svg")
-        build_l1_scan_svg(l1_scan_rows, l1_thr_scan_svg, "throughput_rps", "Strict Aligned Real-Device Throughput Scan", "records/s")
+        build_l1_scan_svg(rows, l1_thr_scan_svg, "throughput_rps", "Strict Aligned Real-Device Throughput Scan", "records/s")
         l1_space_scan_svg = os.path.join(merged_root, "l1_node_space_scan.svg")
         build_l1_scan_svg(
-            l1_scan_rows,
+            rows,
             l1_space_scan_svg,
             "bytes",
             "Strict Aligned Real-Device Cluster Space Scan (shared counted once)",
             "bytes (cluster total, shared counted once)",
         )
         l1_scan_delta_svg = os.path.join(merged_root, "l1_node_binary_vs_peer_scan.svg")
-        build_l1_scan_delta_svg(l1_scan_rows, l1_scan_delta_svg, "Strict Aligned Real-Device: Binary vs Peer Across Node Scales")
+        build_l1_scan_delta_svg(rows, l1_scan_delta_svg, "Strict Aligned Real-Device: Binary vs Peer Across Node Scales")
     report_md = os.path.join(merged_root, "final_aligned_report.md")
     build_report(rows, report_md, include_l1)
 
@@ -1337,16 +1234,11 @@ def main() -> None:
     os.symlink(out_root, latest)
 
     print("saved", summary_path)
-    if single_svg:
-        print("saved", single_svg)
-    if single_delta_svg:
-        print("saved", single_delta_svg)
-    if multi_time_svg:
-        print("saved", multi_time_svg)
-    if multi_thr_svg:
-        print("saved", multi_thr_svg)
-    if multi_space_svg:
-        print("saved", multi_space_svg)
+    print("saved", single_svg)
+    print("saved", single_delta_svg)
+    print("saved", multi_time_svg)
+    print("saved", multi_thr_svg)
+    print("saved", multi_space_svg)
     if l1_svg:
         print("saved", l1_svg)
     if l1_delta_svg:

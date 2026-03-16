@@ -20,6 +20,7 @@ PROFILES = [
     {"name": "zephyr", "eventlog_dir": "eventlogst_semantic_zephyr", "peer_mode": "zephyr_deferred_semantic_like"},
     {"name": "ulog", "eventlog_dir": "eventlogst_semantic_ulog", "peer_mode": "ulog_semantic_like"},
     {"name": "hilog", "eventlog_dir": "eventlogst_semantic_hilog", "peer_mode": "hilog_semantic_like"},
+    {"name": "syslog", "eventlog_dir": "eventlogst_semantic_syslog", "peer_mode": "syslog"},
 ]
 
 SINGLE_MODES = [
@@ -143,6 +144,7 @@ def mode_ext(mode: str) -> str:
         "binary_nocrc": "bnc",
         "binary_varstr": "bvs",
         "binary_nocrc_varstr": "bnv",
+        "syslog": "syslog",
         "nanolog_semantic_like": "nslog",
         "zephyr_deferred_semantic_like": "zslog",
         "ulog_semantic_like": "uslog",
@@ -301,11 +303,13 @@ def pct_improve(base: float, cur: float, higher_better: bool) -> float:
 def build_phase_svg(single_rows: List[dict], out_path: str) -> None:
     modes = ["binary_crc32_legacy", "binary", "binary_hotpath", "binary_nocrc", "binary_varstr", "binary_nocrc_varstr"]
     width = 1600
-    height = 680
     margin = 70
     panel_gap = 30
     panel_w = (width - margin * 2 - panel_gap) / 2.0
     panel_h = 220
+    row_gap = 270
+    grid_rows = max(1, math.ceil(len(single_rows) / 2))
+    height = max(680, 120 + (grid_rows - 1) * row_gap + panel_h + 110)
     palette = {"prep_ms": "#8da0cb", "write_only_ms": "#fc8d62", "post_ms": "#66c2a5"}
 
     lines = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">']
@@ -315,7 +319,7 @@ def build_phase_svg(single_rows: List[dict], out_path: str) -> None:
 
     for pi, row in enumerate(single_rows):
         x0 = margin + (pi % 2) * (panel_w + panel_gap)
-        y0 = 100 + (pi // 2) * 270
+        y0 = 100 + (pi // 2) * row_gap
         ymax = max(
             row["single"]["summary"][m]["end_to_end_ms"]["mean"] for m in modes if m in row["single"]["summary"]
         )
@@ -360,11 +364,13 @@ def build_phase_svg(single_rows: List[dict], out_path: str) -> None:
 def build_pareto_svg(single_rows: List[dict], out_path: str) -> None:
     chosen = ["text_semantic_like", "binary", "binary_nocrc_varstr"]
     width = 1600
-    height = 680
     margin = 80
     panel_gap = 30
     panel_w = (width - margin * 2 - panel_gap) / 2.0
     panel_h = 220
+    row_gap = 270
+    grid_rows = max(1, math.ceil(len(single_rows) / 2))
+    height = max(680, 120 + (grid_rows - 1) * row_gap + panel_h + 110)
     colors = {
         "text_semantic_like": "#7f7f7f",
         "binary": "#1f78b4",
@@ -381,7 +387,7 @@ def build_pareto_svg(single_rows: List[dict], out_path: str) -> None:
         summary = row["single"]["summary"]
         peer = row["peer_mode"]
         x0 = margin + (pi % 2) * (panel_w + panel_gap)
-        y0 = 100 + (pi // 2) * 270
+        y0 = 100 + (pi // 2) * row_gap
         modes = chosen + [peer]
         xs = []
         ys = []
@@ -446,11 +452,13 @@ def build_pareto_svg(single_rows: List[dict], out_path: str) -> None:
 
 def build_multi_scan_svg(rows: List[dict], out_path: str) -> None:
     width = 1600
-    height = 680
     margin = 80
     panel_gap = 30
     panel_w = (width - margin * 2 - panel_gap) / 2.0
     panel_h = 220
+    row_gap = 270
+    grid_rows = max(1, math.ceil(len(rows) / 2))
+    height = max(680, 120 + (grid_rows - 1) * row_gap + panel_h + 110)
     colors = {"text_semantic_like": "#7f7f7f", "binary": "#1f78b4", "peer": "#e31a1c"}
 
     lines = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">']
@@ -460,7 +468,7 @@ def build_multi_scan_svg(rows: List[dict], out_path: str) -> None:
 
     for pi, row in enumerate(rows):
         x0 = margin + (pi % 2) * (panel_w + panel_gap)
-        y0 = 100 + (pi // 2) * 270
+        y0 = 100 + (pi // 2) * row_gap
         peer = row["peer_mode"]
         xs = [float(sc["devices"]) for sc in row["multi"]["scenarios"]]
         ys = []
