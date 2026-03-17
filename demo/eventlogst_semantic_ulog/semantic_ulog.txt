@@ -1,1 +1,1 @@
-1300 ulog_aligned (level|L|8),(module|S|128),(seq|L|32),(code|L|32),(msg_a|S|256),(msg_b|S|256)
+1300 ulog_aligned (tag|L|16),(level|L|8),(seq|L|32),(code|L|32),(temp_x10|L|32)

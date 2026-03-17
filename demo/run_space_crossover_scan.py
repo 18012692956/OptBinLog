@@ -13,10 +13,10 @@ ROOT = os.path.dirname(__file__)
 RESULTS_ROOT = os.path.join(ROOT, "results")
 RUN_BENCH = os.path.join(ROOT, "run_bench.py")
 PROFILES = [
-    {"name": "nanolog", "eventlog_dir": "eventlogst_semantic_nanolog", "peer_mode": "nanolog_semantic_like"},
-    {"name": "zephyr", "eventlog_dir": "eventlogst_semantic_zephyr", "peer_mode": "zephyr_deferred_semantic_like"},
-    {"name": "ulog", "eventlog_dir": "eventlogst_semantic_ulog", "peer_mode": "ulog_semantic_like"},
-    {"name": "hilog", "eventlog_dir": "eventlogst_semantic_hilog", "peer_mode": "hilog_semantic_like"},
+    {"name": "nanolog", "eventlog_dir": "eventlogst_semantic_nanolog", "peer_mode": "nanolog_like"},
+    {"name": "zephyr", "eventlog_dir": "eventlogst_semantic_zephyr", "peer_mode": "zephyr_deferred_like"},
+    {"name": "ulog", "eventlog_dir": "eventlogst_semantic_ulog", "peer_mode": "ulog_async_like"},
+    {"name": "hilog", "eventlog_dir": "eventlogst_semantic_hilog", "peer_mode": "hilog_lite_like"},
     {"name": "syslog", "eventlog_dir": "eventlogst_semantic_syslog", "peer_mode": "syslog"},
 ]
 MAIN_MODES = ["text_semantic_like", "binary"]
@@ -181,7 +181,7 @@ def build_space_scan_svg(rows: List[dict], out_path: str) -> None:
     lines.append(f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">')
     lines.append('<rect width="100%" height="100%" fill="#ffffff"/>')
     lines.append('<text x="50%" y="34" text-anchor="middle" font-family="Arial" font-size="22">Space Trend vs Record Volume (Strict Aligned)</text>')
-    lines.append('<text x="50%" y="58" text-anchor="middle" font-family="Arial" font-size="13">x-axis uses log10(N); y-axis is total_bytes mean per run</text>')
+    lines.append('<text x="50%" y="58" text-anchor="middle" font-family="Arial" font-size="13">x-axis uses log10(N); y-axis is total_bytes mean per run; peer keeps native storage path</text>')
 
     for i, row in enumerate(rows):
         col = i % cols
@@ -346,10 +346,11 @@ def build_report(rows: List[dict], records: List[int], out_path: str) -> None:
     lines.append("")
     lines.append("## Design")
     lines.append("")
-    lines.append("- Modes: `text_semantic_like`, `binary`, `peer semantic_like`")
+    lines.append("- Modes: `text_semantic_like`, `binary`, `peer native mode`")
     lines.append(f"- Record scan: `{','.join(str(x) for x in records)}`")
     lines.append("- Metric: `total_bytes` mean per run")
     lines.append("- Crossover definition: earliest `N` where `binary_bytes <= peer_bytes`")
+    lines.append("- Fairness control: Optbinlog aligns its eventlogst schema to each peer semantics, while the peer side keeps its native storage path")
     lines.append("")
     lines.append("## Profile Summary")
     lines.append("")
@@ -409,6 +410,7 @@ def main() -> None:
             env["OPTBINLOG_BENCH_RECORDS"] = str(n)
             env["OPTBINLOG_BENCH_REPEATS"] = str(args.repeats)
             env["OPTBINLOG_BENCH_WARMUP"] = str(args.warmup)
+            env["OPTBINLOG_NATIVE_ALIGN_REQUIRED"] = "1"
             run_cmd(["python3", RUN_BENCH], cwd=ROOT, env=env)
             bench = load_json(os.path.join(run_out, "bench_result.json"))
             summ = bench["summary"]

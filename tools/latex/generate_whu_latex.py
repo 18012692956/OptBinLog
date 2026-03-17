@@ -173,6 +173,157 @@ def add_longtable_continued_labels(body_tex: str) -> str:
     return longtable_pattern.sub(repl, body_tex)
 
 
+MATH_INLINE_TOKENS = {
+    "N",
+    "D",
+    "r",
+    "L_k",
+    "A_m",
+    "B_m",
+    "C_m",
+    "Q_m",
+    "S_m",
+    "T_m(N)",
+    "W_m(D,r)",
+    "total_bytes",
+    "elapsed_ms",
+    "end_to_end_ms",
+    "throughput_rps",
+    "throughput_e2e_rps",
+}
+
+
+def format_mathish_inline(content: str) -> str | None:
+    token = content.strip()
+    if token in MATH_INLINE_TOKENS:
+        return f"\\({token}\\)"
+    if re.fullmatch(r"[A-Z]_[a-z](?:\([A-Za-z0-9,]+\))?", token):
+        return f"\\({token}\\)"
+    if re.fullmatch(r"[A-Za-z]=[0-9,]+", token):
+        return f"\\({token}\\)"
+    if re.fullmatch(r"[A-Za-z](?:≈|<=|>=|=)[0-9]+(?:～[0-9]+)?", token):
+        token = token.replace("≈", "\\approx ")
+        token = token.replace("<=", "\\le ")
+        token = token.replace(">=", "\\ge ")
+        token = token.replace("～", "\\text{～}")
+        return f"\\({token}\\)"
+    if re.fullmatch(r"[0-9]+/[0-9]+/[0-9]+/[0-9]+", token):
+        return None
+    return None
+
+
+def normalize_inline_terms(body_tex: str) -> str:
+    inline_code_pattern = re.compile(r"\\texttt\{((?:[^{}]|\\[{}%_&#$ ]|\\textbar\{\}|\\/\-?|\\\+|\\-|\\~)*)\}")
+
+    def repl(match: re.Match[str]) -> str:
+        content = match.group(1)
+        content = content.replace("\\ ", " ")
+        content = content.replace("-\\/-", "--")
+        content = content.replace("\\/","/")
+        content = content.replace("\\+","+") 
+        content = content.replace("\\-", "-")
+        content = re.sub(r"\s+", " ", content).strip()
+        mathish = format_mathish_inline(content)
+        if mathish:
+            return mathish
+        return f"\\thesisterm{{{content}}}"
+
+    body_tex = inline_code_pattern.sub(repl, body_tex)
+    body_tex = body_tex.replace("-\\textgreater{}", "\\textrightarrow{}")
+    body_tex = body_tex.replace("\\thesisterm{5/10/15/20}", "5/10/15/20")
+    body_tex = body_tex.replace("\\thesisterm{A\\_m/C\\_m/B\\_m/W\\_m}", "\\(A_m/C_m/B_m/W_m\\)")
+    body_tex = body_tex.replace("经验交叉点 \\thesisterm{N*}", "经验交叉点 \\(N^*\\)")
+    body_tex = body_tex.replace(
+        "\\texttt{INITIALIZING\\ \\textrightarrow{}\\ INITIALIZED}",
+        "\\thesisterm{INITIALIZING} \\textrightarrow{} \\thesisterm{INITIALIZED}",
+    )
+    body_tex = body_tex.replace(
+        "\\texttt{binary\\_bytes\\ \\textless{}=\\ peer\\_bytes}",
+        "\\(\\mathrm{binary\\_bytes} \\le \\mathrm{peer\\_bytes}\\)",
+    )
+    body_tex = body_tex.replace("\\texttt{N\\textless{}=100000}", "\\(N\\le 100000\\)")
+    body_tex = body_tex.replace("\\texttt{N\\textgreater{}=10}", "\\(N\\ge 10\\)")
+    body_tex = body_tex.replace("\\texttt{N\\textgreater{}=50}", "\\(N\\ge 50\\)")
+    body_tex = body_tex.replace("\\texttt{binary\\ \\textless{}=\\ peer}", "\\(\\mathrm{binary} \\le \\mathrm{peer}\\)")
+    body_tex = re.sub(r"\\thesisterm\{([A-Z])\\_m\}", lambda m: f"\\({m.group(1)}_m\\)", body_tex)
+    body_tex = re.sub(
+        r"\\thesisterm\{([A-Za-z])(?:≈|<=|>=|=)([0-9]+)(?:～([0-9]+))?\}",
+        lambda m: "\\("
+        + m.group(1)
+        + (
+            "\\approx "
+            if "≈" in m.group(0)
+            else "\\le "
+            if "<=" in m.group(0)
+            else "\\ge "
+            if ">=" in m.group(0)
+            else "="
+        )
+        + m.group(2)
+        + (f"\\text{{～}}{m.group(3)}" if m.group(3) else "")
+        + "\\)",
+        body_tex,
+    )
+    return body_tex
+
+
+def normalize_text_latex(body_tex: str) -> str:
+    return normalize_inline_terms(body_tex)
+
+
+def promote_chapter4_equations(body_tex: str) -> str:
+    start_marker = "\\section{理论模型与数学推导}"
+    end_marker = "\\section{实验迭代、对比与理论一致性分析}"
+    start = body_tex.find(start_marker)
+    end = body_tex.find(end_marker, start if start >= 0 else 0)
+    if start < 0 or end < 0 or end <= start:
+        return body_tex
+
+    chapter4 = body_tex[start:end]
+
+    def display_to_equation(match: re.Match[str]) -> str:
+        content = match.group(1).strip("\n")
+        return f"\\begin{{equation*}}\n{content}\n\\end{{equation*}}"
+
+    chapter4 = re.sub(r"\\\[\s*\n(.*?)\n\s*\\\]", display_to_equation, chapter4, flags=re.DOTALL)
+
+    labels = [
+        ("S_m(N) = S_{0,m} + N B_m", "eq:space-linear"),
+        ("S_{\\text{bin}}(N) = S_{\\text{shared}} + N \\left(8 + g_{\\text{bin}} + \\sum_k p_k \\widetilde{L}_k\\right)", "eq:bin-space-total"),
+        ("N^*_{\\text{space}}(\\text{bin},x) = \\frac{S_{\\text{shared}} - S_{0,x}}{B_x - B_{\\text{bin}}}", "eq:space-crossover"),
+        ("T_m(N) = A_m + N C_m", "eq:time-linear"),
+        ("Q_m(N) = \\frac{1000N}{T_m(N)} = \\frac{1000}{C_m + A_m/N}", "eq:throughput"),
+        ("N^*_{\\text{time}}(\\text{bin},x) = \\frac{A_{\\text{bin}} - A_x}{C_x - C_{\\text{bin}}}", "eq:time-crossover"),
+        ("E_m(D,r) = A_{\\text{spawn}}(D) + A_m + rC_m + W_m(D,r)", "eq:multi-time"),
+        ("D_{\\text{peak},m} = \\sqrt{\\frac{\\beta_m + rC_m}{\\gamma_m}}", "eq:device-peak"),
+    ]
+
+    for needle, label in labels:
+        pattern = re.compile(
+            rf"\\begin{{equation\*}}\s*(?P<body>(?:(?!\\end{{equation\*}}).)*?{re.escape(needle)}(?:(?!\\end{{equation\*}}).)*?)\\end{{equation\*}}",
+            re.DOTALL,
+        )
+        chapter4 = pattern.sub(
+            lambda match: "\\begin{equation}\n"
+            + match.group("body").strip()
+            + f"\n\\label{{{label}}}\n\\end{{equation}}",
+            chapter4,
+            count=1,
+        )
+
+    chapter4 = re.sub(
+        r"\\begin{equation\*?}\n(.*?)\n\\end{equation\*?}",
+        lambda match: match.group(0).split("\n", 1)[0] + "\n" + match.group(1).strip() + "\n" + match.group(0).rsplit("\n", 1)[-1],
+        chapter4,
+        flags=re.DOTALL,
+    )
+    chapter4 = re.sub(r"\n\s*\n(\\label\{)", r"\n\1", chapter4)
+    chapter4 = re.sub(r"\n\s*\n\\end{equation\*}", r"\n\\end{equation*}", chapter4)
+    chapter4 = re.sub(r"\n\s*\n\\end{equation}", r"\n\\end{equation}", chapter4)
+
+    return body_tex[:start] + chapter4 + body_tex[end:]
+
+
 def normalize_body_latex(body_tex: str) -> str:
     replacements = {
         "\\begin{longtable}[]{@{}lrr@{}}": "\\begin{longtable}[]{@{}\n  >{\\raggedright\\arraybackslash}p{(\\linewidth - 4\\tabcolsep) * \\real{0.18}}\n  >{\\raggedleft\\arraybackslash}p{(\\linewidth - 4\\tabcolsep) * \\real{0.41}}\n  >{\\raggedleft\\arraybackslash}p{(\\linewidth - 4\\tabcolsep) * \\real{0.41}}@{}}",
@@ -185,7 +336,9 @@ def normalize_body_latex(body_tex: str) -> str:
         body_tex = body_tex.replace(src, dst)
     # Keep table header minipages constrained to the column width.
     body_tex = body_tex.replace("\\begin{minipage}[b]{\\linewidth}", "\\begin{minipage}[t]{\\hsize}")
+    body_tex = normalize_inline_terms(body_tex)
     body_tex = add_longtable_continued_labels(body_tex)
+    body_tex = promote_chapter4_equations(body_tex)
     return body_tex
 
 
@@ -238,8 +391,8 @@ def main() -> None:
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    (OUT_DIR / "cn_abstract.tex").write_text(run_pandoc(cn_abs_md), encoding="utf-8")
-    (OUT_DIR / "en_abstract.tex").write_text(run_pandoc(en_abs_md), encoding="utf-8")
+    (OUT_DIR / "cn_abstract.tex").write_text(normalize_text_latex(run_pandoc(cn_abs_md)), encoding="utf-8")
+    (OUT_DIR / "en_abstract.tex").write_text(normalize_text_latex(run_pandoc(en_abs_md)), encoding="utf-8")
     body_parts = [normalize_body_latex(markdown_block_to_latex(body_main, shift_heading=-1))]
     if refs_block:
         body_parts.append(build_references_section(refs_block))

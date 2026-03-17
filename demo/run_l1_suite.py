@@ -241,6 +241,8 @@ def build_bench_env(node: NodeExecutor, remote_out: str) -> Dict[str, str]:
         env["OPTBINLOG_TEXT_PROFILE"] = str(cfg["text_profile"])
     if cfg.get("shared_tag_path"):
         env["OPTBINLOG_SHARED_TAG_PATH"] = str(cfg["shared_tag_path"])
+    if cfg.get("native_align_required"):
+        env["OPTBINLOG_NATIVE_ALIGN_REQUIRED"] = "1"
     return env
 
 

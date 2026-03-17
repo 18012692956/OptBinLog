@@ -16,10 +16,10 @@ RESULTS_ROOT = os.path.join(ROOT, "results")
 RUN_BENCH = os.path.join(ROOT, "run_bench.py")
 
 PROFILES = [
-    {"name": "nanolog", "eventlog_dir": "eventlogst_semantic_nanolog", "peer_mode": "nanolog_semantic_like"},
-    {"name": "zephyr", "eventlog_dir": "eventlogst_semantic_zephyr", "peer_mode": "zephyr_deferred_semantic_like"},
-    {"name": "ulog", "eventlog_dir": "eventlogst_semantic_ulog", "peer_mode": "ulog_semantic_like"},
-    {"name": "hilog", "eventlog_dir": "eventlogst_semantic_hilog", "peer_mode": "hilog_semantic_like"},
+    {"name": "nanolog", "eventlog_dir": "eventlogst_semantic_nanolog", "peer_mode": "nanolog_like"},
+    {"name": "zephyr", "eventlog_dir": "eventlogst_semantic_zephyr", "peer_mode": "zephyr_deferred_like"},
+    {"name": "ulog", "eventlog_dir": "eventlogst_semantic_ulog", "peer_mode": "ulog_async_like"},
+    {"name": "hilog", "eventlog_dir": "eventlogst_semantic_hilog", "peer_mode": "hilog_lite_like"},
     {"name": "syslog", "eventlog_dir": "eventlogst_semantic_syslog", "peer_mode": "syslog"},
 ]
 
@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--single-repeats", type=int, default=5)
     p.add_argument("--single-warmup", type=int, default=1)
     p.add_argument("--multi-records-per-device", type=int, default=1200)
-    p.add_argument("--multi-devices", default="2,5,10")
+    p.add_argument("--multi-devices", default="5,10,20,50")
     p.add_argument("--multi-repeats", type=int, default=3)
     p.add_argument("--multi-warmup", type=int, default=1)
     return p.parse_args()
@@ -145,6 +145,11 @@ def mode_ext(mode: str) -> str:
         "binary_varstr": "bvs",
         "binary_nocrc_varstr": "bnv",
         "syslog": "syslog",
+        "nanolog_like": "nlog",
+        "zephyr_like": "zlog",
+        "zephyr_deferred_like": "zlog",
+        "ulog_async_like": "ulg",
+        "hilog_lite_like": "hlg",
         "nanolog_semantic_like": "nslog",
         "zephyr_deferred_semantic_like": "zslog",
         "ulog_semantic_like": "uslog",
@@ -169,6 +174,7 @@ def run_single_profile(profile: dict, out_dir: str, args: argparse.Namespace) ->
     env["OPTBINLOG_BENCH_RECORDS"] = str(args.single_records)
     env["OPTBINLOG_BENCH_REPEATS"] = str(args.single_repeats)
     env["OPTBINLOG_BENCH_WARMUP"] = str(args.single_warmup)
+    env["OPTBINLOG_NATIVE_ALIGN_REQUIRED"] = "1"
     run_cmd(["python3", RUN_BENCH], env=env)
     return load_json(os.path.join(out_dir, "bench_result.json"))
 
@@ -184,6 +190,8 @@ def run_multi_mode_once(
 ) -> dict:
     os.makedirs(out_dir, exist_ok=True)
     procs = []
+    env = os.environ.copy()
+    env["OPTBINLOG_NATIVE_ALIGN_REQUIRED"] = "1"
     start = time.monotonic_ns()
     for dev in range(devices):
         out_path = os.path.join(out_dir, f"device_{dev:02d}.{mode_ext(mode)}")
@@ -200,7 +208,20 @@ def run_multi_mode_once(
             "--shared",
             shared_path,
         ]
-        procs.append((dev, out_path, subprocess.Popen(cmd, cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)))
+        procs.append(
+            (
+                dev,
+                out_path,
+                subprocess.Popen(
+                    cmd,
+                    cwd=ROOT,
+                    env=env,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                ),
+            )
+        )
 
     rows = []
     for dev, out_path, proc in procs:
@@ -438,7 +459,7 @@ def build_pareto_svg(single_rows: List[dict], out_path: str) -> None:
             ("text_semantic_like", colors["text_semantic_like"]),
             ("binary", colors["binary"]),
             ("binary_nocrc_varstr", colors["binary_nocrc_varstr"]),
-            ("peer semantic_like", colors["peer"]),
+            ("peer native mode", colors["peer"]),
         ]
     ):
         x = lx + idx * 180
@@ -517,7 +538,7 @@ def build_multi_scan_svg(rows: List[dict], out_path: str) -> None:
     legend_y = height - 32
     lx = margin
     for idx, (label, color) in enumerate(
-        [("text_semantic_like", colors["text_semantic_like"]), ("binary", colors["binary"]), ("peer semantic_like", colors["peer"])]
+        [("text_semantic_like", colors["text_semantic_like"]), ("binary", colors["binary"]), ("peer native mode", colors["peer"])]
     ):
         x = lx + idx * 180
         lines.append(f'<line x1="{x}" y1="{legend_y - 5}" x2="{x + 18}" y2="{legend_y - 5}" stroke="{color}" stroke-width="2.2"/>')
@@ -532,11 +553,11 @@ def build_report(rows: List[dict], out_path: str) -> None:
     lines = ["# Strict Fair Semantic Suite Report", ""]
     lines.append("## Fairness Matrix")
     lines.append("")
-    lines.append("| profile | baseline | binary | peer | same schema source | same generated values | same platform | note |")
+    lines.append("| profile | baseline | binary | peer | optbinlog semantic alignment | peer native storage | same generated values | note |")
     lines.append("|---|---|---|---|---|---|---|---|")
     for row in rows:
         lines.append(
-            f"| {row['profile']} | text_semantic_like | binary(default=cache+CRC32C+auto-varstr) | {row['peer_mode']} | yes | yes | local macOS | strict fair semantic tier |"
+            f"| {row['profile']} | text_semantic_like | binary(default=cache+CRC32C+auto-varstr) | {row['peer_mode']} | yes | yes | yes | strict fair semantic tier |"
         )
     lines.append("")
     lines.append("## Single Summary")

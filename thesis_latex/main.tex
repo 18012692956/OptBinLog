@@ -111,6 +111,9 @@
   Extension=.ttc
 ]{Kaiti}
 \newfontfamily\tnr{Times New Roman}
+\usepackage{unicode-math}
+\setmathfont{STIX Two Math}
+\newcommand{\thesisterm}[1]{{\tnr\textup{#1}}}
 \DeclareCaptionFont{songti}{\songti}
 \DeclareCaptionFont{zihaowu}{\zihao{5}}
 \providecommand{\tightlist}{%
@@ -138,7 +141,7 @@
 \numberwithin{equation}{section}
 \renewcommand{\thefigure}{\thesection.\arabic{figure}}
 \renewcommand{\thetable}{\thesection.\arabic{table}}
-\renewcommand{\theequation}{\thesection-\arabic{equation}}
+\renewcommand{\theequation}{\thesection.\arabic{equation}}
 \newcounter{none}
 
 \ctexset{

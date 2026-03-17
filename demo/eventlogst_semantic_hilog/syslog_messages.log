@@ -1,5 +1,5 @@
-# hilog lite semantics
-hilog domain=0xD001 tag=100 level=3 seq=4001 msg="audio route switch done"
-hilog domain=0xD001 tag=100 level=4 seq=4002 msg="audio route switch delayed"
-hilog domain=0xD002 tag=210 level=2 seq=4003 msg="camera stream ready"
-hilog domain=0xD002 tag=211 level=5 seq=4004 msg="camera stream dropped frame"
+# hilog lite aligned semantics
+hilog domain=0xD001 tag=100 level=3 seq=4001 code=301 temp_x10=252
+hilog domain=0xD001 tag=100 level=4 seq=4002 code=302 temp_x10=257
+hilog domain=0xD002 tag=210 level=2 seq=4003 code=411 temp_x10=266
+hilog domain=0xD002 tag=211 level=5 seq=4004 code=412 temp_x10=263

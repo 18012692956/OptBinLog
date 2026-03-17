@@ -17,10 +17,10 @@ ROOT = os.path.dirname(__file__)
 RESULTS_ROOT = os.path.join(ROOT, "results")
 RUN_BENCH = os.path.join(ROOT, "run_bench.py")
 PROFILES = [
-    {"name": "nanolog", "eventlog_dir": "eventlogst_semantic_nanolog", "peer_mode": "nanolog_semantic_like"},
-    {"name": "zephyr", "eventlog_dir": "eventlogst_semantic_zephyr", "peer_mode": "zephyr_deferred_semantic_like"},
-    {"name": "ulog", "eventlog_dir": "eventlogst_semantic_ulog", "peer_mode": "ulog_semantic_like"},
-    {"name": "hilog", "eventlog_dir": "eventlogst_semantic_hilog", "peer_mode": "hilog_semantic_like"},
+    {"name": "nanolog", "eventlog_dir": "eventlogst_semantic_nanolog", "peer_mode": "nanolog_like"},
+    {"name": "zephyr", "eventlog_dir": "eventlogst_semantic_zephyr", "peer_mode": "zephyr_deferred_like"},
+    {"name": "ulog", "eventlog_dir": "eventlogst_semantic_ulog", "peer_mode": "ulog_async_like"},
+    {"name": "hilog", "eventlog_dir": "eventlogst_semantic_hilog", "peer_mode": "hilog_lite_like"},
     {"name": "syslog", "eventlog_dir": "eventlogst_semantic_syslog", "peer_mode": "syslog"},
     # ftrace requires Linux tracefs and elevated execution path; only include in L1.
     {"name": "ftrace", "eventlog_dir": "eventlogst_semantic_ftrace", "peer_mode": "ftrace", "run_single": False, "run_multi": False, "run_l1": True},
@@ -226,6 +226,11 @@ def mode_ext(mode: str) -> str:
         "binary": "bin",
         "syslog": "syslog",
         "ftrace": "ftrace",
+        "nanolog_like": "nlog",
+        "zephyr_like": "zlog",
+        "zephyr_deferred_like": "zlog",
+        "ulog_async_like": "ulg",
+        "hilog_lite_like": "hlg",
         "nanolog_semantic_like": "nslog",
         "zephyr_deferred_semantic_like": "zslog",
         "ulog_semantic_like": "uslog",
@@ -252,6 +257,7 @@ def run_single_profile(profile: dict, out_dir: str, args: argparse.Namespace) ->
     env["OPTBINLOG_BENCH_RECORDS"] = str(args.single_records)
     env["OPTBINLOG_BENCH_REPEATS"] = str(args.single_repeats)
     env["OPTBINLOG_BENCH_WARMUP"] = str(args.single_warmup)
+    env["OPTBINLOG_NATIVE_ALIGN_REQUIRED"] = "1"
     run_cmd(["python3", RUN_BENCH], env=env)
     return load_json(os.path.join(out_dir, "bench_result.json"))
 
@@ -267,6 +273,8 @@ def run_multi_mode_once(
 ) -> dict:
     os.makedirs(out_dir, exist_ok=True)
     procs = []
+    env = os.environ.copy()
+    env["OPTBINLOG_NATIVE_ALIGN_REQUIRED"] = "1"
     start = dt.datetime.now().timestamp()
     for dev in range(devices):
         out_path = os.path.join(out_dir, f"device_{dev:02d}.{mode_ext(mode)}")
@@ -283,7 +291,20 @@ def run_multi_mode_once(
             "--shared",
             shared_path,
         ]
-        procs.append((dev, out_path, subprocess.Popen(cmd, cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)))
+        procs.append(
+            (
+                dev,
+                out_path,
+                subprocess.Popen(
+                    cmd,
+                    cwd=ROOT,
+                    env=env,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                ),
+            )
+        )
 
     rows = []
     for dev, out_path, proc in procs:
@@ -449,6 +470,7 @@ def prepare_l1_config(
         node["build_cmd"] = l1_bench_build_cmd()
         node["bench_bin"] = "./optbinlog_bench_linux"
         node["bench_prefix"] = ""
+        node["native_align_required"] = True
         node["text_profile"] = "semantic"
         if profile["peer_mode"] == "ftrace":
             # ftrace writes trace_marker and toggles tracing_on; keep sudo path.
@@ -664,7 +686,7 @@ def build_single_overview_svg(rows: List[dict], out_path: str) -> None:
     lines = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">']
     lines.append('<rect width="100%" height="100%" fill="#ffffff"/>')
     lines.append('<text x="50%" y="34" text-anchor="middle" font-family="Arial" font-size="21">Strict Aligned Single High-Load Comparison</text>')
-    lines.append('<text x="50%" y="58" text-anchor="middle" font-family="Arial" font-size="13">same schema, same generated values, same platform; bars show text vs final binary vs peer semantic_like</text>')
+    lines.append('<text x="50%" y="58" text-anchor="middle" font-family="Arial" font-size="13">Optbinlog aligns to each peer semantic schema; peer keeps native storage path with the same generated values on the same platform</text>')
 
     for pi, (metric_key, metric_title, unit, higher_better) in enumerate(metrics):
         x0 = margin + pi * (panel_w + gap)
@@ -709,7 +731,7 @@ def build_single_overview_svg(rows: List[dict], out_path: str) -> None:
 
     legend_y = height - 28
     lx = margin
-    for idx, (label, color) in enumerate([("text_semantic_like", role_color["text_semantic_like"]), ("binary", role_color["binary"]), ("peer semantic_like", role_color["peer"])]):
+    for idx, (label, color) in enumerate([("text_semantic_like", role_color["text_semantic_like"]), ("binary", role_color["binary"]), ("peer native mode", role_color["peer"])]):
         x = lx + idx * 170
         lines.append(f'<rect x="{x}" y="{legend_y - 11}" width="12" height="12" fill="{color}"/>')
         lines.append(f'<text x="{x + 18}" y="{legend_y}" font-family="Arial" font-size="12">{label}</text>')
@@ -734,7 +756,7 @@ def build_multi_svg(rows: List[dict], out_path: str, metric_key: str, title: str
     lines = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">']
     lines.append('<rect width="100%" height="100%" fill="#ffffff"/>')
     lines.append(f'<text x="50%" y="34" text-anchor="middle" font-family="Arial" font-size="20">{title}</text>')
-    lines.append(f'<text x="50%" y="58" text-anchor="middle" font-family="Arial" font-size="12">strict aligned local multi-device simulation</text>')
+    lines.append(f'<text x="50%" y="58" text-anchor="middle" font-family="Arial" font-size="12">strict aligned local multi-device simulation with peer-native storage paths</text>')
 
     for pi, row in enumerate(rows):
         x0 = margin + (pi % 2) * (panel_w + panel_gap)
@@ -789,7 +811,7 @@ def build_multi_svg(rows: List[dict], out_path: str, metric_key: str, title: str
 
     legend_y = height - 32
     lx = margin
-    for idx, (label, color) in enumerate([("text_semantic_like", colors["text_semantic_like"]), ("binary", colors["binary"]), ("peer semantic_like", colors["peer"])]):
+    for idx, (label, color) in enumerate([("text_semantic_like", colors["text_semantic_like"]), ("binary", colors["binary"]), ("peer native mode", colors["peer"])]):
         x = lx + idx * 180
         lines.append(f'<line x1="{x}" y1="{legend_y - 5}" x2="{x + 18}" y2="{legend_y - 5}" stroke="{color}" stroke-width="2.2"/>')
         lines.append(f'<text x="{x + 26}" y="{legend_y}" font-family="Arial" font-size="12">{label}</text>')
@@ -815,7 +837,7 @@ def build_direct_delta_svg(rows: List[dict], section_key: str, out_path: str, ti
     lines = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">']
     lines.append('<rect width="100%" height="100%" fill="#ffffff"/>')
     lines.append(f'<text x="50%" y="34" text-anchor="middle" font-family="Arial" font-size="21">{title}</text>')
-    lines.append('<text x="50%" y="58" text-anchor="middle" font-family="Arial" font-size="12">positive means final binary is better than the peer under aligned semantics</text>')
+    lines.append('<text x="50%" y="58" text-anchor="middle" font-family="Arial" font-size="12">positive means final binary is better than the peer while both sides keep aligned semantics</text>')
 
     deltas: Dict[str, Dict[str, float]] = {}
     for row in rows:
@@ -895,7 +917,7 @@ def build_l1_overview_svg(rows: List[dict], out_path: str) -> None:
     lines = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">']
     lines.append('<rect width="100%" height="100%" fill="#ffffff"/>')
     lines.append('<text x="50%" y="34" text-anchor="middle" font-family="Arial" font-size="21">Strict Aligned Real-Device Simulation Overview</text>')
-    lines.append('<text x="50%" y="58" text-anchor="middle" font-family="Arial" font-size="13">multi-VM nodes; one node = one device; space uses cluster total with shared file counted once</text>')
+    lines.append('<text x="50%" y="58" text-anchor="middle" font-family="Arial" font-size="13">multi-VM nodes; one node = one device; peer keeps native storage path; shared file is counted once at cluster level</text>')
 
     for pi, (metric_key, metric_title, unit, higher_better) in enumerate(metrics):
         x0 = margin + pi * (panel_w + gap)
@@ -941,7 +963,7 @@ def build_l1_overview_svg(rows: List[dict], out_path: str) -> None:
 
     legend_y = height - 28
     lx = margin
-    for idx, (label, color) in enumerate([("text_semantic_like", role_color["text_semantic_like"]), ("binary", role_color["binary"]), ("peer semantic_like", role_color["peer"])]):
+    for idx, (label, color) in enumerate([("text_semantic_like", role_color["text_semantic_like"]), ("binary", role_color["binary"]), ("peer native mode", role_color["peer"])]):
         x = lx + idx * 170
         lines.append(f'<rect x="{x}" y="{legend_y - 11}" width="12" height="12" fill="{color}"/>')
         lines.append(f'<text x="{x + 18}" y="{legend_y}" font-family="Arial" font-size="12">{label}</text>')
@@ -966,7 +988,7 @@ def build_l1_scan_svg(rows: List[dict], out_path: str, metric_key: str, title: s
     lines = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">']
     lines.append('<rect width="100%" height="100%" fill="#ffffff"/>')
     lines.append(f'<text x="50%" y="34" text-anchor="middle" font-family="Arial" font-size="20">{title}</text>')
-    lines.append(f'<text x="50%" y="58" text-anchor="middle" font-family="Arial" font-size="12">strict aligned real multi-node simulation; one node = one device</text>')
+    lines.append(f'<text x="50%" y="58" text-anchor="middle" font-family="Arial" font-size="12">strict aligned real multi-node simulation; one node = one device; peer keeps native storage path</text>')
 
     for pi, row in enumerate(rows):
         x0 = margin + (pi % 2) * (panel_w + panel_gap)
@@ -1021,7 +1043,7 @@ def build_l1_scan_svg(rows: List[dict], out_path: str, metric_key: str, title: s
 
     legend_y = height - 32
     lx = margin
-    for idx, (label, color) in enumerate([("text_semantic_like", colors["text_semantic_like"]), ("binary", colors["binary"]), ("peer semantic_like", colors["peer"])]):
+    for idx, (label, color) in enumerate([("text_semantic_like", colors["text_semantic_like"]), ("binary", colors["binary"]), ("peer native mode", colors["peer"])]):
         x = lx + idx * 180
         lines.append(f'<line x1="{x}" y1="{legend_y - 5}" x2="{x + 18}" y2="{legend_y - 5}" stroke="{color}" stroke-width="2.2"/>')
         lines.append(f'<text x="{x + 26}" y="{legend_y}" font-family="Arial" font-size="12">{label}</text>')
@@ -1050,7 +1072,7 @@ def build_l1_scan_delta_svg(rows: List[dict], out_path: str, title: str) -> None
     lines = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">']
     lines.append('<rect width="100%" height="100%" fill="#ffffff"/>')
     lines.append(f'<text x="50%" y="34" text-anchor="middle" font-family="Arial" font-size="20">{title}</text>')
-    lines.append('<text x="50%" y="58" text-anchor="middle" font-family="Arial" font-size="12">positive means final binary is better than the peer under aligned semantics</text>')
+    lines.append('<text x="50%" y="58" text-anchor="middle" font-family="Arial" font-size="12">positive means final binary is better than the peer while both sides keep aligned semantics</text>')
 
     for pi, row in enumerate(rows):
         x0 = margin + (pi % 2) * (panel_w + panel_gap)
@@ -1120,9 +1142,9 @@ def build_report(rows: List[dict], out_path: str, include_l1: bool) -> None:
     lines.append("")
     lines.append("## Comparison Design")
     lines.append("")
-    lines.append("- Modes: `text_semantic_like`, final `binary`, `peer mode` (semantic_like or system path)")
+    lines.append("- Modes: `text_semantic_like`, final `binary`, `peer native mode`")
     lines.append("- Binary definition: cached schema/tag cache + per-record CRC32C(hw) + auto-varstr on string-heavy schemas")
-    lines.append("- Fairness controls: same schema, same generated values, same platform within each category")
+    lines.append("- Fairness controls: Optbinlog aligns eventlogst to each peer semantics; peer keeps native storage path; generated values and platform are kept consistent within each category")
     lines.append("- Categories: single high-load, local multi-device simulation, real-device simulation (multi-VM nodes)")
     lines.append("- Real-device space metric note: `size%` uses cluster total bytes with shared metadata file counted once (not repeated per node).")
     lines.append("- Visuals: single overview + direct binary-vs-peer deltas; multi-device time/throughput/space scans; real-device overview + direct deltas")
@@ -1223,7 +1245,7 @@ def build_report(rows: List[dict], out_path: str, include_l1: bool) -> None:
 
     lines.append("## Interpretation Summary")
     lines.append("")
-    lines.append("- Single high-load isolates local encoding cost and shows whether final binary can beat peer hot paths under equal semantics.")
+    lines.append("- Single high-load isolates local encoding cost and shows whether final binary can beat a peer-native path under aligned semantics.")
     lines.append("- Local multi-device simulation adds scheduler and shared-file competition while keeping platform constant.")
     lines.append("- Real-device simulation adds node-level execution skew and transport/noise, so it is the closest engineering deployment proxy in this thesis.")
 

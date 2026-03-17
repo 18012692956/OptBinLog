@@ -457,6 +457,67 @@ static void free_generated_records(GeneratedRecordSet* set) {
     memset(set, 0, sizeof(*set));
 }
 
+static int env_require_native_alignment(void) {
+    const char* raw = getenv("OPTBINLOG_NATIVE_ALIGN_REQUIRED");
+    return raw && (strcmp(raw, "1") == 0 || strcmp(raw, "true") == 0 || strcmp(raw, "yes") == 0);
+}
+
+static int lookup_u_field(const OptbinlogTagDef* tag,
+                          const OptbinlogRecord* rec,
+                          const char* name,
+                          uint64_t* out) {
+    if (!tag || !rec || !name || !out) return -1;
+    for (int e = 0; e < rec->ele_count; e++) {
+        const OptbinlogTagEleDef* ele = &tag->eles[e];
+        const OptbinlogValue* v = &rec->values[e];
+        if (strcmp(ele->name, name) != 0) continue;
+        if (v->kind != OPTBINLOG_VAL_U) return -1;
+        *out = v->u;
+        return 0;
+    }
+    return -1;
+}
+
+static int map_record_to_native_nano(const OptbinlogTagDef* tag,
+                                     const OptbinlogRecord* rec,
+                                     NanoPackedRecord* out) {
+    uint64_t seq = 0;
+    uint64_t code = 0;
+    uint64_t temp_x10 = 0;
+    uint64_t tag_v = 0;
+    uint64_t level = 0;
+    if (!tag || !rec || !out) return -1;
+    if (lookup_u_field(tag, rec, "seq", &seq) != 0) return -1;
+    if (lookup_u_field(tag, rec, "code", &code) != 0) return -1;
+    if (lookup_u_field(tag, rec, "temp_x10", &temp_x10) != 0) return -1;
+    if (lookup_u_field(tag, rec, "tag", &tag_v) != 0) {
+        tag_v = (uint64_t)(uint16_t)rec->tag_id;
+    }
+    if (lookup_u_field(tag, rec, "level", &level) != 0) {
+        level = 0;
+    }
+    out->ts_ns = (uint64_t)rec->timestamp * 1000000000ull;
+    out->seq = (uint32_t)seq;
+    out->code = (uint32_t)code;
+    out->temp_x10 = (int32_t)(uint32_t)temp_x10;
+    out->tag = (uint16_t)tag_v;
+    out->level = (uint16_t)level;
+    return 0;
+}
+
+static int map_record_to_native_hilog(const OptbinlogTagDef* tag,
+                                      const OptbinlogRecord* rec,
+                                      NanoPackedRecord* out,
+                                      uint16_t* out_domain) {
+    uint64_t domain = 0xD001u;
+    if (map_record_to_native_nano(tag, rec, out) != 0) return -1;
+    if (lookup_u_field(tag, rec, "domain", &domain) != 0) {
+        domain = 0xD001u;
+    }
+    if (out_domain) *out_domain = (uint16_t)domain;
+    return 0;
+}
+
 static int build_generated_records(const char* eventlog_dir, long records, GeneratedRecordSet* out) {
     size_t total_values = 0;
     size_t total_string_fields = 0;
@@ -922,7 +983,7 @@ static int bench_ftrace(const char* eventlog_dir, long records) {
     return 0;
 }
 
-static int bench_nanolog_like(const char* out_path, long records) {
+static int bench_nanolog_like(const char* out_path, const char* eventlog_dir, long records) {
     uint64_t t_e2e0 = now_ns();
     FILE* fp = fopen(out_path, "wb");
     if (!fp) {
@@ -933,19 +994,47 @@ static int bench_nanolog_like(const char* out_path, long records) {
 
     uint64_t t_write0 = now_ns();
     NanoPackedRecord* staging = malloc((size_t)records * sizeof(NanoPackedRecord));
+    GeneratedRecordSet set;
+    int use_generated = 0;
     if (!staging) {
         fclose(fp);
         fprintf(stderr, "OOM\n");
         return -1;
     }
+    memset(&set, 0, sizeof(set));
+    if (eventlog_dir && eventlog_dir[0] && build_generated_records(eventlog_dir, records, &set) == 0) {
+        use_generated = 1;
+    }
     uint64_t rnd = 0x123456789abcdef0ULL;
     for (long i = 0; i < records; i++) {
-        staging[i] = make_nano_record(i, &rnd);
+        if (use_generated) {
+            const OptbinlogTagDef* tag = &set.tags.items[i % (long)set.tags.len];
+            const OptbinlogRecord* rec = &set.recs[i];
+            if (map_record_to_native_nano(tag, rec, &staging[i]) != 0) {
+                free_generated_records(&set);
+                free(staging);
+                fclose(fp);
+                if (env_require_native_alignment()) {
+                    fprintf(stderr, "native nanolog alignment failed for schema %s\n", eventlog_dir);
+                    return -1;
+                }
+                use_generated = 0;
+                rnd = 0x123456789abcdef0ULL;
+                for (long j = 0; j <= i; j++) {
+                    staging[j] = make_nano_record(j, &rnd);
+                }
+            }
+        } else {
+            staging[i] = make_nano_record(i, &rnd);
+        }
     }
     size_t written = fwrite(staging, sizeof(NanoPackedRecord), (size_t)records, fp);
     fflush(fp);
     uint64_t t_write1 = now_ns();
 
+    if (use_generated) {
+        free_generated_records(&set);
+    }
     free(staging);
     fclose(fp);
     uint64_t t_e2e1 = now_ns();
@@ -962,7 +1051,7 @@ static int bench_nanolog_like(const char* out_path, long records) {
     return 0;
 }
 
-static int bench_zephyr_deferred_like(const char* out_path, long records) {
+static int bench_zephyr_deferred_like(const char* out_path, const char* eventlog_dir, long records) {
     uint64_t t_e2e0 = now_ns();
     FILE* fp = fopen(out_path, "wb");
     if (!fp) {
@@ -973,10 +1062,16 @@ static int bench_zephyr_deferred_like(const char* out_path, long records) {
 
     const size_t batch_cap = 1024;
     NanoPackedRecord* batch = malloc(batch_cap * sizeof(NanoPackedRecord));
+    GeneratedRecordSet set;
+    int use_generated = 0;
     if (!batch) {
         fclose(fp);
         fprintf(stderr, "OOM\n");
         return -1;
+    }
+    memset(&set, 0, sizeof(set));
+    if (eventlog_dir && eventlog_dir[0] && build_generated_records(eventlog_dir, records, &set) == 0) {
+        use_generated = 1;
     }
 
     uint64_t bytes = 0;
@@ -985,7 +1080,25 @@ static int bench_zephyr_deferred_like(const char* out_path, long records) {
 
     uint64_t t_write0 = now_ns();
     for (long i = 0; i < records; i++) {
-        batch[n_batch++] = make_nano_record(i, &rnd);
+        if (use_generated) {
+            const OptbinlogTagDef* tag = &set.tags.items[i % (long)set.tags.len];
+            const OptbinlogRecord* rec = &set.recs[i];
+            if (map_record_to_native_nano(tag, rec, &batch[n_batch]) != 0) {
+                free_generated_records(&set);
+                free(batch);
+                fclose(fp);
+                if (env_require_native_alignment()) {
+                    fprintf(stderr, "native zephyr alignment failed for schema %s\n", eventlog_dir);
+                    return -1;
+                }
+                use_generated = 0;
+                rnd = 0x123456789abcdef0ULL;
+                batch[n_batch] = make_nano_record(i, &rnd);
+            }
+        } else {
+            batch[n_batch] = make_nano_record(i, &rnd);
+        }
+        n_batch++;
         if (n_batch == batch_cap) {
             size_t n = fwrite(batch, sizeof(NanoPackedRecord), n_batch, fp);
             bytes += (uint64_t)n * (uint64_t)sizeof(NanoPackedRecord);
@@ -999,6 +1112,9 @@ static int bench_zephyr_deferred_like(const char* out_path, long records) {
     fflush(fp);
     uint64_t t_write1 = now_ns();
 
+    if (use_generated) {
+        free_generated_records(&set);
+    }
     free(batch);
     fclose(fp);
     uint64_t t_e2e1 = now_ns();
@@ -1014,7 +1130,7 @@ static int bench_zephyr_deferred_like(const char* out_path, long records) {
     return 0;
 }
 
-static int bench_ulog_async_like(const char* out_path, long records) {
+static int bench_ulog_async_like(const char* out_path, const char* eventlog_dir, long records) {
     uint64_t t_e2e0 = now_ns();
     FILE* fp = fopen(out_path, "wb");
     if (!fp) {
@@ -1029,10 +1145,33 @@ static int bench_ulog_async_like(const char* out_path, long records) {
     size_t nb = 0;
     uint64_t bytes = 0;
     uint64_t rnd = 0x123456789abcdef0ULL;
+    GeneratedRecordSet set;
+    int use_generated = 0;
+    memset(&set, 0, sizeof(set));
+    if (eventlog_dir && eventlog_dir[0] && build_generated_records(eventlog_dir, records, &set) == 0) {
+        use_generated = 1;
+    }
 
     uint64_t t_write0 = now_ns();
     for (long i = 0; i < records; i++) {
-        NanoPackedRecord r = make_nano_record(i, &rnd);
+        NanoPackedRecord r;
+        if (use_generated) {
+            const OptbinlogTagDef* tag = &set.tags.items[i % (long)set.tags.len];
+            const OptbinlogRecord* rec = &set.recs[i];
+            if (map_record_to_native_nano(tag, rec, &r) != 0) {
+                free_generated_records(&set);
+                fclose(fp);
+                if (env_require_native_alignment()) {
+                    fprintf(stderr, "native ulog alignment failed for schema %s\n", eventlog_dir);
+                    return -1;
+                }
+                use_generated = 0;
+                rnd = 0x123456789abcdef0ULL;
+                r = make_nano_record(i, &rnd);
+            }
+        } else {
+            r = make_nano_record(i, &rnd);
+        }
         int n = snprintf(batch[nb],
                          sizeof(batch[nb]),
                          "I/%u(%u): seq=%u code=%u temp=%d.%d ts=%llu\n",
@@ -1069,6 +1208,9 @@ static int bench_ulog_async_like(const char* out_path, long records) {
     fflush(fp);
     uint64_t t_write1 = now_ns();
 
+    if (use_generated) {
+        free_generated_records(&set);
+    }
     fclose(fp);
     uint64_t t_e2e1 = now_ns();
 
@@ -1083,7 +1225,7 @@ static int bench_ulog_async_like(const char* out_path, long records) {
     return 0;
 }
 
-static int bench_hilog_lite_like(const char* out_path, long records) {
+static int bench_hilog_lite_like(const char* out_path, const char* eventlog_dir, long records) {
     uint64_t t_e2e0 = now_ns();
     FILE* fp = fopen(out_path, "wb");
     if (!fp) {
@@ -1094,9 +1236,34 @@ static int bench_hilog_lite_like(const char* out_path, long records) {
 
     uint64_t bytes = 0;
     uint64_t rnd = 0x123456789abcdef0ULL;
+    GeneratedRecordSet set;
+    int use_generated = 0;
+    memset(&set, 0, sizeof(set));
+    if (eventlog_dir && eventlog_dir[0] && build_generated_records(eventlog_dir, records, &set) == 0) {
+        use_generated = 1;
+    }
     uint64_t t_write0 = now_ns();
     for (long i = 0; i < records; i++) {
-        NanoPackedRecord r = make_nano_record(i, &rnd);
+        NanoPackedRecord r;
+        uint16_t domain = 0xD001u;
+        if (use_generated) {
+            const OptbinlogTagDef* tag = &set.tags.items[i % (long)set.tags.len];
+            const OptbinlogRecord* rec = &set.recs[i];
+            if (map_record_to_native_hilog(tag, rec, &r, &domain) != 0) {
+                free_generated_records(&set);
+                fclose(fp);
+                if (env_require_native_alignment()) {
+                    fprintf(stderr, "native hilog alignment failed for schema %s\n", eventlog_dir);
+                    return -1;
+                }
+                use_generated = 0;
+                rnd = 0x123456789abcdef0ULL;
+                r = make_nano_record(i, &rnd);
+                domain = 0xD001u;
+            }
+        } else {
+            r = make_nano_record(i, &rnd);
+        }
         char msg[64];
         int n = snprintf(msg, sizeof(msg), "c=%u s=%u t=%d", r.code, r.seq, r.temp_x10);
         if (n <= 0 || (size_t)n > sizeof(msg)) {
@@ -1106,7 +1273,7 @@ static int bench_hilog_lite_like(const char* out_path, long records) {
         HiLogLiteHeader h;
         h.sec = (uint32_t)(r.ts_ns / 1000000000ull);
         h.nsec = (uint32_t)(r.ts_ns % 1000000000ull);
-        h.domain = 0xD001u;
+        h.domain = domain;
         h.tag = r.tag;
         h.level = (uint8_t)(r.level & 0x7u);
         h.reserved = 0u;
@@ -1120,6 +1287,9 @@ static int bench_hilog_lite_like(const char* out_path, long records) {
     fflush(fp);
     uint64_t t_write1 = now_ns();
 
+    if (use_generated) {
+        free_generated_records(&set);
+    }
     fclose(fp);
     uint64_t t_e2e1 = now_ns();
 
@@ -1580,19 +1750,19 @@ int main(int argc, char** argv) {
     }
     if (strcmp(mode, "nanolog_like") == 0) {
         if (!out_path) { usage(argv[0]); return 1; }
-        return bench_nanolog_like(out_path, records) == 0 ? 0 : 1;
+        return bench_nanolog_like(out_path, eventlog_dir, records) == 0 ? 0 : 1;
     }
     if (strcmp(mode, "zephyr_deferred_like") == 0 || strcmp(mode, "zephyr_like") == 0) {
         if (!out_path) { usage(argv[0]); return 1; }
-        return bench_zephyr_deferred_like(out_path, records) == 0 ? 0 : 1;
+        return bench_zephyr_deferred_like(out_path, eventlog_dir, records) == 0 ? 0 : 1;
     }
     if (strcmp(mode, "ulog_async_like") == 0) {
         if (!out_path) { usage(argv[0]); return 1; }
-        return bench_ulog_async_like(out_path, records) == 0 ? 0 : 1;
+        return bench_ulog_async_like(out_path, eventlog_dir, records) == 0 ? 0 : 1;
     }
     if (strcmp(mode, "hilog_lite_like") == 0) {
         if (!out_path) { usage(argv[0]); return 1; }
-        return bench_hilog_lite_like(out_path, records) == 0 ? 0 : 1;
+        return bench_hilog_lite_like(out_path, eventlog_dir, records) == 0 ? 0 : 1;
     }
     if (strcmp(mode, "nanolog_semantic_like") == 0) {
         if (!out_path) { usage(argv[0]); return 1; }
