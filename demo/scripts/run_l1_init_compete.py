@@ -13,7 +13,8 @@ from typing import Any, Dict, List, Tuple
 import run_l1_suite as l1
 
 
-ROOT = os.path.dirname(__file__)
+SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(SCRIPTS_DIR)
 RESULTS_ROOT = os.path.join(ROOT, "results")
 
 
@@ -173,7 +174,7 @@ def run_one_node_once(
     cmd = (
         f"{py} -c {json.dumps(gate)}; "
         f"{env_prefix}"
-        f"./optbinlog_init_race --eventlog-dir {json.dumps(eventlog_dir)} "
+        f"./build/bin/optbinlog_init_race --eventlog-dir {json.dumps(eventlog_dir)} "
         f"--shared {json.dumps(shared_path)} --trace {json.dumps(trace_path)} --procs 1"
     )
     wall_start_ns = time.time_ns()
@@ -200,8 +201,9 @@ def ensure_build(raw_node: Dict[str, Any]) -> None:
     build_cmd = raw_node.get("init_build_cmd")
     if not build_cmd:
         build_cmd = (
+            "mkdir -p build/bin; "
             "gcc -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -Iinclude "
-            "-o optbinlog_init_race optbinlog_init_race.c src/optbinlog_shared.c src/optbinlog_eventlog.c"
+            "-o build/bin/optbinlog_init_race optbinlog_init_race.c src/optbinlog_shared.c src/optbinlog_eventlog.c"
         )
     node.run_in_workdir(build_cmd, check=True)
 

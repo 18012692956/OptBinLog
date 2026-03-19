@@ -13,9 +13,12 @@ import time
 from typing import Dict, List
 
 
-ROOT = os.path.dirname(__file__)
+SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(SCRIPTS_DIR)
+BUILD_BIN_DIR = os.path.join(ROOT, "build", "bin")
+CONFIGS_DIR = os.path.join(ROOT, "configs")
 RESULTS_ROOT = os.path.join(ROOT, "results")
-RUN_BENCH = os.path.join(ROOT, "run_bench.py")
+RUN_BENCH = os.path.join(SCRIPTS_DIR, "run_bench.py")
 PROFILES = [
     {"name": "nanolog", "eventlog_dir": "eventlogst_semantic_nanolog", "peer_mode": "nanolog_like"},
     {"name": "zephyr", "eventlog_dir": "eventlogst_semantic_zephyr", "peer_mode": "zephyr_deferred_like"},
@@ -37,12 +40,13 @@ def l1_bench_build_cmd() -> str:
     # Prefer hardware CRC32C acceleration on ARM/x86 when the ISA supports it.
     return (
         "NEED_BUILD=0; "
-        "if [ ! -x ./optbinlog_bench_linux ]; then NEED_BUILD=1; fi; "
+        "if [ ! -x ./build/bin/optbinlog_bench_linux ]; then NEED_BUILD=1; fi; "
         "for SRC in optbinlog_bench.c src/optbinlog_shared.c src/optbinlog_eventlog.c src/optbinlog_binlog.c "
         "include/optbinlog_shared.h include/optbinlog_eventlog.h include/optbinlog_binlog.h; do "
-        "if [ -f \"$SRC\" ] && [ \"$SRC\" -nt ./optbinlog_bench_linux ]; then NEED_BUILD=1; break; fi; "
+        "if [ -f \"$SRC\" ] && [ \"$SRC\" -nt ./build/bin/optbinlog_bench_linux ]; then NEED_BUILD=1; break; fi; "
         "done; "
         "if [ \"$NEED_BUILD\" -eq 0 ]; then exit 0; fi; "
+        "mkdir -p build/bin; "
         "ARCH=$(uname -m); EXTRA=''; "
         "if [ \"$ARCH\" = \"aarch64\" ] || [ \"$ARCH\" = \"arm64\" ]; then EXTRA='-march=armv8-a+crc'; "
         "elif [ \"$ARCH\" = \"x86_64\" ] || [ \"$ARCH\" = \"i686\" ] || [ \"$ARCH\" = \"i386\" ]; then EXTRA='-msse4.2'; fi; "
@@ -52,14 +56,14 @@ def l1_bench_build_cmd() -> str:
         "elif command -v clang >/dev/null 2>&1; then CC_BIN=clang; fi; "
         "if [ -z \"$CC_BIN\" ]; then echo 'no C compiler found on node'; exit 127; fi; "
         "$CC_BIN -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L $EXTRA "
-        "-Iinclude -o optbinlog_bench_linux optbinlog_bench.c src/optbinlog_shared.c src/optbinlog_eventlog.c src/optbinlog_binlog.c"
+        "-Iinclude -o build/bin/optbinlog_bench_linux optbinlog_bench.c src/optbinlog_shared.c src/optbinlog_eventlog.c src/optbinlog_binlog.c"
     )
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Run final aligned comparison suite across single/multi/L1.")
     p.add_argument("--out-dir", default="", help="Output root directory")
-    p.add_argument("--bench-bin", default=os.path.join(ROOT, "optbinlog_bench_macos"))
+    p.add_argument("--bench-bin", default=os.path.join(BUILD_BIN_DIR, "optbinlog_bench_macos"))
     p.add_argument("--single-records", type=int, default=20000)
     p.add_argument("--single-repeats", type=int, default=5)
     p.add_argument("--single-warmup", type=int, default=1)
@@ -67,7 +71,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--multi-devices", default="5,10,20,50")
     p.add_argument("--multi-repeats", type=int, default=3)
     p.add_argument("--multi-warmup", type=int, default=1)
-    p.add_argument("--l1-template", default=os.path.join(ROOT, "l1_config.linux_10_all_unaligned_initrace.json"))
+    p.add_argument("--l1-template", default=os.path.join(CONFIGS_DIR, "l1_config.linux_10_all_unaligned_initrace.json"))
     p.add_argument("--l1-node-scales", default="5,10,15,20")
     p.add_argument("--l1-records", type=int, default=20000)
     p.add_argument("--l1-repeats", type=int, default=3)
@@ -468,7 +472,7 @@ def prepare_l1_config(
         node["modes"] = modes
         node["baseline"] = "text_semantic_like"
         node["build_cmd"] = l1_bench_build_cmd()
-        node["bench_bin"] = "./optbinlog_bench_linux"
+        node["bench_bin"] = "./build/bin/optbinlog_bench_linux"
         node["bench_prefix"] = ""
         node["native_align_required"] = True
         node["text_profile"] = "semantic"
@@ -493,7 +497,7 @@ def run_l1_profile(config_path: str, tag: str) -> str:
     # Keep L1 node-runner stdout/stderr attached to avoid limactl transient
     # failures observed when fully buffering nested launcher output.
     proc = subprocess.run(
-        ["python3", os.path.join(ROOT, "run_l1_suite.py"), "--config", config_path, "--tag", tag],
+        ["python3", os.path.join(SCRIPTS_DIR, "run_l1_suite.py"), "--config", config_path, "--tag", tag],
         cwd=ROOT,
         text=True,
         capture_output=False,

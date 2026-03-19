@@ -5,7 +5,9 @@ import shutil
 import statistics
 import subprocess
 
-ROOT = os.path.dirname(__file__)
+SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(SCRIPTS_DIR)
+BUILD_BIN_DIR = os.path.join(ROOT, "build", "bin")
 EVENTLOG_DIR = os.environ.get("OPTBINLOG_EVENTLOG_DIR", os.path.join(ROOT, "eventlogst"))
 OUT_DIR = os.environ.get("OPTBINLOG_MULTI_OUT_DIR", os.path.join(ROOT, "bench_multi"))
 RAW_DIR = os.path.join(OUT_DIR, "raw")
@@ -20,7 +22,7 @@ MODES_ENV = os.environ.get("OPTBINLOG_MULTI_MODES", "text,binary,syslog,ftrace")
 BASELINE_MODE = os.environ.get("OPTBINLOG_MULTI_BASELINE", "text")
 
 os.makedirs(RAW_DIR, exist_ok=True)
-bench = os.environ.get("OPTBINLOG_MULTI_BIN", os.path.join(ROOT, "optbinlog_multi_bench"))
+bench = os.environ.get("OPTBINLOG_MULTI_BIN", os.path.join(BUILD_BIN_DIR, "optbinlog_multi_bench"))
 
 
 def parse_modes(raw):

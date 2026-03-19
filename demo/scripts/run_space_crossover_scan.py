@@ -9,9 +9,11 @@ import subprocess
 from typing import Dict, List, Tuple
 
 
-ROOT = os.path.dirname(__file__)
+SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(SCRIPTS_DIR)
+BUILD_BIN_DIR = os.path.join(ROOT, "build", "bin")
 RESULTS_ROOT = os.path.join(ROOT, "results")
-RUN_BENCH = os.path.join(ROOT, "run_bench.py")
+RUN_BENCH = os.path.join(SCRIPTS_DIR, "run_bench.py")
 PROFILES = [
     {"name": "nanolog", "eventlog_dir": "eventlogst_semantic_nanolog", "peer_mode": "nanolog_like"},
     {"name": "zephyr", "eventlog_dir": "eventlogst_semantic_zephyr", "peer_mode": "zephyr_deferred_like"},
@@ -25,7 +27,7 @@ MAIN_MODES = ["text_semantic_like", "binary"]
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Scan record volume to estimate binary/peer space crossover.")
     p.add_argument("--out-dir", default="", help="Output directory")
-    p.add_argument("--bench-bin", default=os.path.join(ROOT, "optbinlog_bench_macos"))
+    p.add_argument("--bench-bin", default=os.path.join(BUILD_BIN_DIR, "optbinlog_bench_macos"))
     p.add_argument("--records", default="1,2,5,10,20,50,100,200,500,1000,5000,20000,100000")
     p.add_argument("--repeats", type=int, default=2)
     p.add_argument("--warmup", type=int, default=0)

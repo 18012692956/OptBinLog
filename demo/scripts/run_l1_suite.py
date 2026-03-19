@@ -13,7 +13,8 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 
-ROOT = os.path.dirname(__file__)
+SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(SCRIPTS_DIR)
 RESULTS_ROOT = os.path.join(ROOT, "results")
 
 
@@ -64,8 +65,8 @@ def node_defaults(node: Dict[str, Any]) -> Dict[str, Any]:
     out.setdefault("workdir", ROOT)
     out.setdefault("shell", "bash")
     out.setdefault("python", "python3")
-    out.setdefault("bench_script", "run_bench.py")
-    out.setdefault("bench_bin", "optbinlog_bench")
+    out.setdefault("bench_script", "scripts/run_bench.py")
+    out.setdefault("bench_bin", "build/bin/optbinlog_bench")
     out.setdefault("eventlog_dir", "eventlogst")
     out.setdefault("records", 80000)
     out.setdefault("repeats", 5)

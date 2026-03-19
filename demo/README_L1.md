@@ -1,6 +1,6 @@
 # L1 多节点仿真（VM/容器 + 网络仿真）
 
-`run_l1_suite.py` 用于 L1 级别实验：把“设备”提升为独立节点（local/ssh/prefix），并可在节点上注入 `tc netem` 网络条件，再汇总每节点基准结果。
+`scripts/run_l1_suite.py` 用于 L1 级别实验：把“设备”提升为独立节点（local/ssh/prefix），并可在节点上注入 `tc netem` 网络条件，再汇总每节点基准结果。
 
 ## 目标
 
@@ -12,7 +12,7 @@
 
 ```bash
 cd demo
-python3 run_l1_suite.py --config l1_config.example.json
+python3 scripts/run_l1_suite.py --config configs/l1_config.linux_10_all_unaligned_initrace.json
 ```
 
 输出：
@@ -34,8 +34,8 @@ python3 run_l1_suite.py --config l1_config.example.json
 
 1. `name`：节点名称
 2. `workdir`：节点上 `demo` 目录
-3. `bench_script`：默认 `run_bench.py`
-4. `bench_bin`：节点二进制路径（如 `./optbinlog_bench_linux`）
+3. `bench_script`：默认 `scripts/run_bench.py`
+4. `bench_bin`：节点二进制路径（如 `./build/bin/optbinlog_bench_linux`）
 5. `records/repeats/warmup/modes/baseline`：与单机脚本一致
 6. `netem`（可选）：
    - `iface` 必填

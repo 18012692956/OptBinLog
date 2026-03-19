@@ -11,7 +11,9 @@ import statistics
 import subprocess
 from typing import Dict, List, Tuple
 
-ROOT = os.path.dirname(__file__)
+SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(SCRIPTS_DIR)
+BUILD_BIN_DIR = os.path.join(ROOT, "build", "bin")
 RESULTS_ROOT = os.path.join(ROOT, "results")
 
 LOCAL_GROUPS = [
@@ -37,11 +39,12 @@ L1_GROUPS = [
 def l1_bench_build_cmd() -> str:
     # Prefer hardware CRC32C acceleration on ARM/x86 when the ISA supports it.
     return (
+        "mkdir -p build/bin; "
         "ARCH=$(uname -m); EXTRA=''; "
         "if [ \"$ARCH\" = \"aarch64\" ] || [ \"$ARCH\" = \"arm64\" ]; then EXTRA='-march=armv8-a+crc'; "
         "elif [ \"$ARCH\" = \"x86_64\" ] || [ \"$ARCH\" = \"i686\" ] || [ \"$ARCH\" = \"i386\" ]; then EXTRA='-msse4.2'; fi; "
         "gcc -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L $EXTRA "
-        "-Iinclude -o optbinlog_bench_linux optbinlog_bench.c src/optbinlog_shared.c src/optbinlog_eventlog.c src/optbinlog_binlog.c"
+        "-Iinclude -o build/bin/optbinlog_bench_linux optbinlog_bench.c src/optbinlog_shared.c src/optbinlog_eventlog.c src/optbinlog_binlog.c"
     )
 
 
@@ -155,6 +158,7 @@ def iqr_filter(values: List[float], mult: float = 1.5) -> List[float]:
 
 
 def build_local_binaries() -> None:
+    ensure_dir(BUILD_BIN_DIR)
     run_cmd(
         [
             "clang",
@@ -164,7 +168,7 @@ def build_local_binaries() -> None:
             "-std=c11",
             "-Iinclude",
             "-o",
-            "optbinlog_bench_macos",
+            os.path.join(BUILD_BIN_DIR, "optbinlog_bench_macos"),
             "optbinlog_bench.c",
             "src/optbinlog_shared.c",
             "src/optbinlog_eventlog.c",
@@ -181,7 +185,7 @@ def build_local_binaries() -> None:
             "-std=c11",
             "-Iinclude",
             "-o",
-            "optbinlog_multi_bench_macos",
+            os.path.join(BUILD_BIN_DIR, "optbinlog_multi_bench_macos"),
             "optbinlog_multi_bench.c",
             "src/optbinlog_shared.c",
             "src/optbinlog_eventlog.c",
@@ -196,11 +200,12 @@ def build_linux_binaries(instance: str) -> None:
     script = (
         "set -euo pipefail; "
         f"cd {wd}; "
+        "mkdir -p build/bin; "
         "gcc -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L "
-        "-Iinclude -o optbinlog_bench_linux optbinlog_bench.c "
+        "-Iinclude -o build/bin/optbinlog_bench_linux optbinlog_bench.c "
         "src/optbinlog_shared.c src/optbinlog_eventlog.c src/optbinlog_binlog.c; "
         "gcc -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L "
-        "-Iinclude -o optbinlog_multi_bench_linux optbinlog_multi_bench.c "
+        "-Iinclude -o build/bin/optbinlog_multi_bench_linux optbinlog_multi_bench.c "
         "src/optbinlog_shared.c src/optbinlog_eventlog.c src/optbinlog_binlog.c"
     )
     run_linux_shell(instance, script)
@@ -247,7 +252,7 @@ def run_local_single(group: dict, out_dir: str, args: argparse.Namespace) -> str
     ensure_dir(out_dir)
     env = os.environ.copy()
     env["OPTBINLOG_BENCH_OUT_DIR"] = out_dir
-    env["OPTBINLOG_BENCH_BIN"] = os.path.join(ROOT, "optbinlog_bench_macos")
+    env["OPTBINLOG_BENCH_BIN"] = os.path.join(BUILD_BIN_DIR, "optbinlog_bench_macos")
     env["OPTBINLOG_EVENTLOG_DIR"] = os.path.join(ROOT, group["eventlog_dir"])
     env["OPTBINLOG_TEXT_PROFILE"] = "semantic"
     env["OPTBINLOG_BENCH_MODES"] = f"text,binary,{group['peer']}"
@@ -255,7 +260,7 @@ def run_local_single(group: dict, out_dir: str, args: argparse.Namespace) -> str
     env["OPTBINLOG_BENCH_RECORDS"] = str(args.single_records)
     env["OPTBINLOG_BENCH_REPEATS"] = str(args.single_repeats)
     env["OPTBINLOG_BENCH_WARMUP"] = str(args.single_warmup)
-    run_cmd(["python3", "run_bench.py"], cwd=ROOT, env=env)
+    run_cmd(["python3", os.path.join(SCRIPTS_DIR, "run_bench.py")], cwd=ROOT, env=env)
     return os.path.join(out_dir, "bench_result.json")
 
 
@@ -263,7 +268,7 @@ def run_local_multi(group: dict, out_dir: str, args: argparse.Namespace) -> str:
     ensure_dir(out_dir)
     env = os.environ.copy()
     env["OPTBINLOG_MULTI_OUT_DIR"] = out_dir
-    env["OPTBINLOG_MULTI_BIN"] = os.path.join(ROOT, "optbinlog_multi_bench_macos")
+    env["OPTBINLOG_MULTI_BIN"] = os.path.join(BUILD_BIN_DIR, "optbinlog_multi_bench_macos")
     env["OPTBINLOG_EVENTLOG_DIR"] = os.path.join(ROOT, group["eventlog_dir"])
     env["OPTBINLOG_TEXT_PROFILE"] = "semantic"
     env["OPTBINLOG_MULTI_MODES"] = f"text,binary,{group['peer']}"
@@ -272,7 +277,7 @@ def run_local_multi(group: dict, out_dir: str, args: argparse.Namespace) -> str:
     env["OPTBINLOG_MULTI_WARMUP"] = str(args.multi_warmup)
     env["OPTBINLOG_SCAN_DEVICES"] = args.multi_scan_devices
     env["OPTBINLOG_SCAN_RECORDS_PER_DEVICE"] = args.multi_scan_rpd
-    run_cmd(["python3", "run_multi_bench.py"], cwd=ROOT, env=env)
+    run_cmd(["python3", os.path.join(SCRIPTS_DIR, "run_multi_bench.py")], cwd=ROOT, env=env)
     return os.path.join(out_dir, "bench_multi_result.json")
 
 
@@ -285,7 +290,7 @@ def run_linux_single(group: dict, out_dir: str, args: argparse.Namespace, instan
     remote_out = out_dir
     env = {
         "OPTBINLOG_BENCH_OUT_DIR": remote_out,
-        "OPTBINLOG_BENCH_BIN": os.path.join(ROOT, "optbinlog_bench_linux"),
+        "OPTBINLOG_BENCH_BIN": os.path.join(ROOT, "build", "bin", "optbinlog_bench_linux"),
         "OPTBINLOG_EVENTLOG_DIR": os.path.join(ROOT, group["eventlog_dir"]),
         "OPTBINLOG_TEXT_PROFILE": "semantic",
         "OPTBINLOG_BENCH_MODES": f"text,binary,{group['peer']}",
@@ -300,7 +305,7 @@ def run_linux_single(group: dict, out_dir: str, args: argparse.Namespace, instan
         f"cd {shlex.quote(ROOT)}; "
         f"sudo -n rm -rf {shlex.quote(remote_out)}; "
         f"export {linux_exports(env)}; "
-        "sudo -n -E python3 run_bench.py; "
+        "sudo -n -E python3 scripts/run_bench.py; "
         f"sudo -n chown -R $(id -u):$(id -g) {shlex.quote(remote_out)} || true"
     )
     run_linux_shell(instance, script)
@@ -312,7 +317,7 @@ def run_linux_multi(group: dict, out_dir: str, args: argparse.Namespace, instanc
     remote_out = out_dir
     env = {
         "OPTBINLOG_MULTI_OUT_DIR": remote_out,
-        "OPTBINLOG_MULTI_BIN": os.path.join(ROOT, "optbinlog_multi_bench_linux"),
+        "OPTBINLOG_MULTI_BIN": os.path.join(ROOT, "build", "bin", "optbinlog_multi_bench_linux"),
         "OPTBINLOG_EVENTLOG_DIR": os.path.join(ROOT, group["eventlog_dir"]),
         "OPTBINLOG_TEXT_PROFILE": "semantic",
         "OPTBINLOG_MULTI_MODES": f"text,binary,{group['peer']}",
@@ -328,7 +333,7 @@ def run_linux_multi(group: dict, out_dir: str, args: argparse.Namespace, instanc
         f"cd {shlex.quote(ROOT)}; "
         f"sudo -n rm -rf {shlex.quote(remote_out)}; "
         f"export {linux_exports(env)}; "
-        "sudo -n -E python3 run_multi_bench.py; "
+        "sudo -n -E python3 scripts/run_multi_bench.py; "
         f"sudo -n chown -R $(id -u):$(id -g) {shlex.quote(remote_out)} || true"
     )
     run_linux_shell(instance, script)
@@ -366,7 +371,7 @@ def prepare_l1_config(template_path: str, out_path: str, group: dict, args: argp
 
 
 def run_l1_group(config_path: str, tag: str) -> str:
-    run_cmd(["python3", "run_l1_suite.py", "--config", config_path, "--tag", tag], cwd=ROOT)
+    run_cmd(["python3", os.path.join(SCRIPTS_DIR, "run_l1_suite.py"), "--config", config_path, "--tag", tag], cwd=ROOT)
     return os.path.join(ROOT, "results", tag, "l1_summary.json")
 
 
@@ -669,7 +674,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Run grouped semantic matrix for local/linux/L1 and merge visualizations.")
     p.add_argument("--out-dir", default="", help="Output directory root. Default: results/grouped_semantic_matrix_<ts>")
     p.add_argument("--linux-instance", default="thesis-linux")
-    p.add_argument("--l1-template", default=os.path.join(ROOT, "l1_config.linux_10_all_unaligned_initrace.json"))
+    p.add_argument("--l1-template", default=os.path.join(ROOT, "configs", "l1_config.linux_10_all_unaligned_initrace.json"))
 
     p.add_argument("--single-records", type=int, default=60000)
     p.add_argument("--single-repeats", type=int, default=4)

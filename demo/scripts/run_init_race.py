@@ -5,7 +5,9 @@ import statistics
 import subprocess
 import time
 
-ROOT = os.path.dirname(__file__)
+SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(SCRIPTS_DIR)
+BUILD_BIN_DIR = os.path.join(ROOT, "build", "bin")
 EVENTLOG_DIR = os.environ.get("OPTBINLOG_EVENTLOG_DIR", os.path.join(ROOT, "eventlogst"))
 OUT_DIR = os.environ.get("OPTBINLOG_INIT_OUT_DIR", os.path.join(ROOT, "init_race"))
 RUN_DIR = os.path.join(OUT_DIR, "runs")
@@ -17,7 +19,7 @@ IQR_MULT = float(os.environ.get("OPTBINLOG_INIT_IQR_MULT", "1.5"))
 CMD_RETRIES = int(os.environ.get("OPTBINLOG_INIT_CMD_RETRIES", "5"))
 
 os.makedirs(RUN_DIR, exist_ok=True)
-race = os.environ.get("OPTBINLOG_INIT_BIN", os.path.join(ROOT, "optbinlog_init_race"))
+race = os.environ.get("OPTBINLOG_INIT_BIN", os.path.join(BUILD_BIN_DIR, "optbinlog_init_race"))
 
 
 def percentile(values, p):
