@@ -8,6 +8,12 @@
 - `build/bin/`: 编译产物（二进制可执行文件）
 - `eventlogst*/`: 语义对齐事件格式输入
 - `results/`: 统一实验输出目录（按标签归档）
+- `predefense/`: 预答辩专用目录（脚本、手册、独立 build、独立结果）
+
+## 预答辩展示入口（独立于实验）
+
+- `predefense/run_demo.sh`：预答辩一键演示（正确性、可读回放、空间/写入对比）
+- `predefense/README.md`：预答辩现场运行手册
 
 ## 保留的实验脚本
 

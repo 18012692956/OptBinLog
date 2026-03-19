@@ -10,6 +10,7 @@
 /demo/bench/
 /demo/bench_multi/
 /demo/bench_platform/
+/demo/build/
 /demo/init_race/
 /demo/multi/
 /demo/results/
