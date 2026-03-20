@@ -28,5 +28,13 @@ typedef int (*OptbinlogRecordCallback)(const OptbinlogRecord* rec, void* user);
 
 int optbinlog_binlog_write(const char* shared_path, const char* log_path, const OptbinlogRecord* records, size_t count);
 int optbinlog_binlog_read(const char* shared_path, const char* log_path, OptbinlogRecordCallback cb, void* user);
+/*
+ * Repair tail damage caused by power loss during frame write.
+ * Return value:
+ *   0  -> file already clean / no truncation needed
+ *   1  -> damaged tail detected and truncated to last valid frame
+ *  -1  -> repair failed
+ */
+int optbinlog_binlog_recover_tail(const char* log_path, size_t* before_bytes, size_t* after_bytes);
 
 #endif

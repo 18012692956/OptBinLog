@@ -7,6 +7,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 #if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
 #include <arm_acle.h>
@@ -81,6 +82,14 @@ static int crc32c_table_ready = 0;
 
 static OptbinlogSharedViewCache g_shared_view_cache;
 static int g_shared_view_cache_registered = 0;
+
+typedef struct {
+    int valid;
+    dev_t st_dev;
+    ino_t st_ino;
+} OptbinlogRepairSeen;
+
+static OptbinlogRepairSeen g_repair_seen[32];
 
 static void crc32_init_table(void) {
     for (uint32_t i = 0; i < 256u; i++) {
@@ -207,6 +216,15 @@ static uint32_t read_le32(const uint8_t* src) {
 static int env_flag_enabled(const char* name) {
     const char* raw = getenv(name);
     if (!raw || !raw[0]) return 0;
+    if (strcmp(raw, "0") == 0) return 0;
+    if (strcmp(raw, "false") == 0) return 0;
+    if (strcmp(raw, "FALSE") == 0) return 0;
+    return 1;
+}
+
+static int env_flag_enabled_default(const char* name, int default_value) {
+    const char* raw = getenv(name);
+    if (!raw || !raw[0]) return default_value ? 1 : 0;
     if (strcmp(raw, "0") == 0) return 0;
     if (strcmp(raw, "false") == 0) return 0;
     if (strcmp(raw, "FALSE") == 0) return 0;
@@ -440,6 +458,192 @@ static int write_exact(FILE* fp, const void* data, size_t n) {
     return fwrite(data, 1, n, fp) == n ? 0 : -1;
 }
 
+static int checksum_type_valid(OptbinlogChecksumType checksum_type) {
+    return checksum_type == OPTBINLOG_CHECKSUM_CRC32 ||
+           checksum_type == OPTBINLOG_CHECKSUM_CRC32C ||
+           checksum_type == OPTBINLOG_CHECKSUM_NONE;
+}
+
+static int repair_seen_contains(dev_t st_dev, ino_t st_ino) {
+    for (size_t i = 0; i < sizeof(g_repair_seen) / sizeof(g_repair_seen[0]); i++) {
+        if (!g_repair_seen[i].valid) continue;
+        if (g_repair_seen[i].st_dev == st_dev && g_repair_seen[i].st_ino == st_ino) return 1;
+    }
+    return 0;
+}
+
+static void repair_seen_add(dev_t st_dev, ino_t st_ino) {
+    for (size_t i = 0; i < sizeof(g_repair_seen) / sizeof(g_repair_seen[0]); i++) {
+        if (g_repair_seen[i].valid &&
+            g_repair_seen[i].st_dev == st_dev &&
+            g_repair_seen[i].st_ino == st_ino) {
+            return;
+        }
+    }
+    for (size_t i = 0; i < sizeof(g_repair_seen) / sizeof(g_repair_seen[0]); i++) {
+        if (!g_repair_seen[i].valid) {
+            g_repair_seen[i].valid = 1;
+            g_repair_seen[i].st_dev = st_dev;
+            g_repair_seen[i].st_ino = st_ino;
+            return;
+        }
+    }
+    /* Simple wrap-around replacement to avoid unbounded state. */
+    static size_t g_repair_seen_next = 0;
+    size_t idx = g_repair_seen_next % (sizeof(g_repair_seen) / sizeof(g_repair_seen[0]));
+    g_repair_seen[idx].valid = 1;
+    g_repair_seen[idx].st_dev = st_dev;
+    g_repair_seen[idx].st_ino = st_ino;
+    g_repair_seen_next++;
+}
+
+int optbinlog_binlog_recover_tail(const char* log_path, size_t* before_bytes, size_t* after_bytes) {
+    if (!log_path || !log_path[0]) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    struct stat st;
+    if (stat(log_path, &st) != 0) {
+        if (errno == ENOENT) {
+            if (before_bytes) *before_bytes = 0;
+            if (after_bytes) *after_bytes = 0;
+            return 0;
+        }
+        return -1;
+    }
+    if (!S_ISREG(st.st_mode)) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    size_t total = (size_t)st.st_size;
+    if (before_bytes) *before_bytes = total;
+    if (after_bytes) *after_bytes = total;
+    if (total == 0) return 0;
+
+    FILE* fp = fopen(log_path, "rb");
+    if (!fp) return -1;
+
+    uint8_t* payload = NULL;
+    size_t payload_cap = 0;
+    size_t valid_bytes = 0;
+    int dirty_tail = 0;
+    int hard_error = 0;
+
+    for (;;) {
+        uint8_t len_buf[4];
+        size_t n = fread(len_buf, 1, sizeof(len_buf), fp);
+        if (n == 0) {
+            if (feof(fp)) break;
+            hard_error = 1;
+            break;
+        }
+        if (n != sizeof(len_buf)) {
+            dirty_tail = 1;
+            break;
+        }
+
+        uint32_t frame_header = read_le32(len_buf);
+        OptbinlogChecksumType checksum_type = (OptbinlogChecksumType)(frame_header >> OPTBINLOG_FRAME_CHECKSUM_SHIFT);
+        uint32_t payload_len = frame_header & OPTBINLOG_FRAME_LEN_MASK;
+        if (payload_len < OPTBINLOG_MIN_PAYLOAD_LEN || payload_len > OPTBINLOG_MAX_PAYLOAD_LEN) {
+            dirty_tail = 1;
+            break;
+        }
+        if (!checksum_type_valid(checksum_type)) {
+            dirty_tail = 1;
+            break;
+        }
+
+        if (payload_cap < (size_t)payload_len) {
+            uint8_t* next = realloc(payload, (size_t)payload_len);
+            if (!next) {
+                hard_error = 1;
+                break;
+            }
+            payload = next;
+            payload_cap = (size_t)payload_len;
+        }
+
+        if (read_exact(fp, payload, (size_t)payload_len) != 0) {
+            dirty_tail = 1;
+            break;
+        }
+
+        uint8_t crc_buf[4];
+        if (read_exact(fp, crc_buf, sizeof(crc_buf)) != 0) {
+            dirty_tail = 1;
+            break;
+        }
+
+        uint32_t expect_crc = read_le32(crc_buf);
+        uint32_t got_crc = 0u;
+        if (compute_frame_checksum(checksum_type, len_buf, payload, (size_t)payload_len, &got_crc) != 0) {
+            hard_error = 1;
+            break;
+        }
+        if (expect_crc != got_crc) {
+            dirty_tail = 1;
+            break;
+        }
+
+        valid_bytes += sizeof(uint32_t) + (size_t)payload_len + sizeof(uint32_t);
+    }
+
+    free(payload);
+    fclose(fp);
+    if (hard_error) return -1;
+    if (!dirty_tail || valid_bytes >= total) {
+        if (after_bytes) *after_bytes = total;
+        return 0;
+    }
+
+    if (truncate(log_path, (off_t)valid_bytes) != 0) {
+        return -1;
+    }
+    if (after_bytes) *after_bytes = valid_bytes;
+    return 1;
+}
+
+static int auto_repair_tail_if_needed(const char* log_path) {
+    if (!env_flag_enabled_default("OPTBINLOG_BINLOG_RECOVER_TAIL", 1)) {
+        return 0;
+    }
+    if (!log_path || !log_path[0]) return 0;
+
+    struct stat st;
+    if (stat(log_path, &st) != 0) {
+        if (errno == ENOENT) return 0;
+        fprintf(stderr, "stat %s failed before tail-recover: %s\n", log_path, strerror(errno));
+        return -1;
+    }
+    if (!S_ISREG(st.st_mode) || st.st_size == 0) return 0;
+    if (repair_seen_contains(st.st_dev, st.st_ino)) return 0;
+
+    size_t before_bytes = 0;
+    size_t after_bytes = 0;
+    int rc = optbinlog_binlog_recover_tail(log_path, &before_bytes, &after_bytes);
+    if (rc < 0) {
+        fprintf(stderr, "tail-recover failed for %s: %s\n", log_path, strerror(errno));
+        return -1;
+    }
+    if (rc > 0) {
+        fprintf(stderr,
+                "tail-recover applied on %s: %zu -> %zu (drop %zu bytes)\n",
+                log_path,
+                before_bytes,
+                after_bytes,
+                before_bytes - after_bytes);
+    }
+
+    struct stat st_after;
+    if (stat(log_path, &st_after) == 0 && S_ISREG(st_after.st_mode)) {
+        repair_seen_add(st_after.st_dev, st_after.st_ino);
+    }
+    return 0;
+}
+
 int optbinlog_binlog_write(const char* shared_path, const char* log_path, const OptbinlogRecord* records, size_t count) {
     const char* prof_env = getenv("OPTBINLOG_PROFILE");
     int profile = (prof_env && prof_env[0] == '1') ? 1 : 0;
@@ -465,7 +669,13 @@ int optbinlog_binlog_write(const char* shared_path, const char* log_path, const 
     if (profile) t_cache += now_ns() - t0;
     int varstr = (varstr_mode < 0) ? schema_prefers_varstr(&cache_stats) : varstr_mode;
 
-    FILE* fp = fopen(log_path, "wb");
+    int append_mode = env_flag_enabled("OPTBINLOG_BINLOG_APPEND");
+    if (append_mode) {
+        if (auto_repair_tail_if_needed(log_path) != 0) {
+            return -1;
+        }
+    }
+    FILE* fp = fopen(log_path, append_mode ? "ab" : "wb");
     if (!fp) {
         fprintf(stderr, "open %s failed: %s\n", log_path, strerror(errno));
         return -1;

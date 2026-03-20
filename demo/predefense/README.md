@@ -1,60 +1,68 @@
-# Optbinlog 预答辩演示手册（独立目录版）
+# Optbinlog Predefense 展示工程
 
-预答辩展示文件已与实验文件分离，统一放在 `predefense/` 下：
+本目录专用于预答辩展示，和论文实验脚本分离。
 
-- `predefense/run_demo.sh`：预答辩一键演示脚本
-- `predefense/build/`：预答辩专用二进制
-- `predefense/results/`：预答辩专用输出
+## 1. 目录分层
 
-## 你将展示什么
+- `scripts/`：展示入口（全流程、实时展示、互动轮次、快速兜底）
+- `tools/`：终端回放、实时网页看板、性能对比、鲁棒性验证
+- `configs/`：场景参数（`normal` / `stress`）
+- `src/`：嵌入式运行模拟器与手动注入器源码（C）
+- `eventlog_embedded/`：嵌入式 schema（标签与字段定义）
+- `docs/`：展示流程、详细手册、答辩代码片段
+- `build/`：编译产物（自动生成）
+- `results/`：所有展示输出证据（自动生成）
 
-脚本会自动生成三部分证据：
-
-1. 正确性与鲁棒性  
-   `roundtrip_ok=1`，并验证“坏 tag / 截断日志”会被识别。
-2. 可读回放  
-   把二进制日志解码成带字段名的 table 和 JSONL。
-3. 空间与写入对比  
-   对比 `text_semantic_like` 与 `binary` 的 `total_bytes` 和 `write_only_ms`。
-
-## 现场命令（推荐）
+## 2. 推荐主命令（实时展示）
 
 ```bash
 cd /Users/sky/Documents/graduation\ design/demo
-bash predefense/run_demo.sh
-cat predefense/results/latest/demo_report.md
-cat predefense/results/latest/03_decode_showcase/decoded_bench_table.txt
+bash predefense/scripts/run_live_showcase.sh --scenario normal --tag defense_live
 ```
 
-## 参数说明
+默认会以较慢节奏流式输出（`--stream-interval-ms` 默认 180ms），便于讲解。
 
-```bash
-bash predefense/run_demo.sh --eventlog-dir eventlogst_semantic_min --records 50000 --tag predefense_custom
-```
+## 3. 你现在能在网页看板做什么
 
-- `--eventlog-dir`：schema 目录（相对 `demo/` 或绝对路径）。
-- `--records`：对比样本数量（越大越稳定，耗时也更长）。
-- `--tag`：输出目录名，最终在 `predefense/results/<tag>/`。
+1. 运行中观察：阶段、状态、时间线、优化指标。
+2. 逐步查看：切换到“逐步查看”，用“上一步/下一步”看每条事件。
+3. 设备节奏控制：`暂停设备/继续设备/设备单步(1事件)`。
+4. 手动注入：点击“注入异常 / 诊断重试 / 注入恢复”。
+5. 双日志视图：同时看二进制十六进制和可读日志 tail。
+6. 断电恢复闭环：点击“模拟断电截断”后，点“继续设备”会自动恢复后再继续；也可用“手动恢复(备用)”演示兜底路径。
 
-## 输出目录说明
+## 4. 关键参数
 
-默认输出到：
+- `--fault-at-cycle N`：自动异常注入周期
+- `--recover-at-cycle N`：自动恢复周期
+- `--stream-interval-ms N`：流式速度（越大越慢）
+- `--live-host H`：看板地址（默认 `127.0.0.1`）
+- `--live-port P`：看板端口（默认 `8765`）
+- `--live-hold-seconds N`：模拟结束后看板额外保留时间
 
-- `predefense/results/predefense_<时间戳>/`
-- `predefense/results/latest`（软链，指向最近一次）
+## 5. 其他命令
 
-关键文件：
+- `bash predefense/scripts/run_full_showcase.sh --scenario normal --mode auto`
+- `bash predefense/scripts/run_full_showcase.sh --scenario normal --mode live`
+- `bash predefense/scripts/run_quick_showcase.sh`
 
-1. `demo_report.md`：可直接投屏讲解的总览报告。
-2. `01_roundtrip/roundtrip_stdout.txt`：正确性与异常检测输出。
-3. `03_decode_showcase/decoded_bench_table.txt`：可读解码结果（建议现场展示）。
-4. `03_decode_showcase/decoded_bench.jsonl`：可读解码结果（JSONL）。
-5. `03_decode_showcase/decoded_roundtrip_table.txt`：roundtrip 样本解码结果。
-6. `02_space_speed/*.csvline`：性能与空间原始数据。
+## 6. 输出目录
 
-## 快速兜底（时间紧）
+统一输出到：
 
-```bash
-cat predefense/results/latest/demo_report.md
-cat predefense/results/latest/03_decode_showcase/decoded_bench_table.txt
-```
+- `predefense/results/<tag>/`
+- `predefense/results/latest_full`（软链）
+
+实时模式重点文件：
+
+- `01_lifecycle/live_dashboard_url.txt`
+- `01_lifecycle/live_state_snapshot.json`
+- `01_lifecycle/sim_stdout.txt`
+- `01_lifecycle/decoded_runtime.jsonl`
+- `01_lifecycle/decoded_runtime_table.txt`
+
+## 7. 文档入口
+
+- 详细操作手册：`docs/OPERATION_MANUAL.md`
+- 预答辩流程：`docs/PRESENTATION_FLOW.md`
+- 追问代码片段：`docs/CODE_SNIPPETS.md`

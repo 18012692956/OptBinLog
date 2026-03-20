@@ -1,0 +1,5 @@
+{
+  "modes": ["text_semantic_like", "binary"],
+  "metrics": ["write_only_ms", "total_bytes", "peak_kb"],
+  "summary": "median"
+}

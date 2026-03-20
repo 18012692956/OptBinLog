@@ -1,0 +1,10 @@
+{
+  "name": "normal",
+  "cycles": 26,
+  "profile": "normal",
+  "fault_at_cycle": 12,
+  "recover_at_cycle": 22,
+  "playback_speed": 1.2,
+  "benchmark_records": 80000,
+  "benchmark_runs": 3
+}

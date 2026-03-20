@@ -1,0 +1,7 @@
+2001 boot_stage (stage|L|8),(code|L|16),(temp_x10|L|16),(uptime_ms|L|32)
+2002 sensor_sample (sensor_id|L|8),(value_x100|L|32),(status|L|8),(uptime_ms|L|32)
+2003 control_loop (loop_id|L|8),(latency_us|L|32),(pwm|L|16),(uptime_ms|L|32)
+2004 net_state (state|L|8),(rssi_dbm|L|16),(retry|L|8),(uptime_ms|L|32)
+2005 power_state (soc|L|8),(voltage_mv|L|16),(current_ma|L|16),(uptime_ms|L|32)
+2006 alert_event (level|L|8),(fault|L|16),(value_x10|L|16),(uptime_ms|L|32)
+2007 note_event (code|L|16),(reserved|L|16),(uptime_ms|L|32),(msg|S|160)

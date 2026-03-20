@@ -35,12 +35,13 @@ typedef struct {
 static void usage(const char* prog) {
     fprintf(stderr,
             "Usage:\n"
-            "  %s --shared <shared_eventtag.bin> --log <run.bin> [--format table|jsonl] [--limit N] [--summary]\n"
+            "  %s --shared <shared_eventtag.bin> --log <run.bin> [--format table|jsonl] [--limit N] [--summary] [--repair-tail]\n"
             "\n"
             "Examples:\n"
             "  %s --shared ./shared_eventtag.bin --log ./binary_run_000.bin\n"
-            "  %s --shared ./shared_eventtag.bin --log ./binary_run_000.bin --format jsonl --limit 20 --summary\n",
-            prog, prog, prog);
+            "  %s --shared ./shared_eventtag.bin --log ./binary_run_000.bin --format jsonl --limit 20 --summary\n"
+            "  %s --shared ./shared_eventtag.bin --log ./binary_run_000.bin --repair-tail\n",
+            prog, prog, prog, prog);
 }
 
 static const char* safe_tag_name(const OptbinlogEventTag* tag) {
@@ -229,6 +230,7 @@ int main(int argc, char** argv) {
     const char* shared_path = NULL;
     const char* log_path = NULL;
     ReaderCtx ctx;
+    int repair_tail = 0;
     memset(&ctx, 0, sizeof(ctx));
     ctx.format = OUTPUT_TABLE;
 
@@ -258,6 +260,8 @@ int main(int argc, char** argv) {
             ctx.limit = (size_t)v;
         } else if (strcmp(argv[i], "--summary") == 0) {
             ctx.show_summary = 1;
+        } else if (strcmp(argv[i], "--repair-tail") == 0) {
+            repair_tail = 1;
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             usage(argv[0]);
             return 0;
@@ -276,6 +280,28 @@ int main(int argc, char** argv) {
     if (optbinlog_shared_open(shared_path, &ctx.base, &ctx.map_size, &ctx.header) != 0) {
         fprintf(stderr, "open shared file failed: %s\n", shared_path);
         return 1;
+    }
+
+    if (repair_tail) {
+        size_t before_bytes = 0;
+        size_t after_bytes = 0;
+        int repair_rc = optbinlog_binlog_recover_tail(log_path, &before_bytes, &after_bytes);
+        if (repair_rc < 0) {
+            fprintf(stderr, "tail repair failed: %s\n", log_path);
+            free(ctx.counters);
+            optbinlog_shared_close(ctx.base, ctx.map_size);
+            return 1;
+        }
+        if (repair_rc > 0) {
+            fprintf(stderr,
+                    "tail repair applied: %s, %zu -> %zu (drop %zu bytes)\n",
+                    log_path,
+                    before_bytes,
+                    after_bytes,
+                    before_bytes - after_bytes);
+        } else {
+            fprintf(stderr, "tail repair clean: %s\n", log_path);
+        }
     }
 
     int rc = optbinlog_binlog_read(shared_path, log_path, read_cb, &ctx);

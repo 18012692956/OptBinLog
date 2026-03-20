@@ -1,0 +1,10 @@
+{
+  "name": "stress",
+  "cycles": 42,
+  "profile": "stress",
+  "fault_at_cycle": 16,
+  "recover_at_cycle": 34,
+  "playback_speed": 1.4,
+  "benchmark_records": 160000,
+  "benchmark_runs": 3
+}
