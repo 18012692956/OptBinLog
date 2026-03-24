@@ -90,6 +90,30 @@ def split_next_h2(block: str) -> tuple[str, str]:
     return block[: m.start()].strip(), block[m.start() :].strip()
 
 
+def split_section_by_heading_pattern(block: str, heading_pattern: str) -> tuple[str, str]:
+    m = re.search(heading_pattern, block, flags=re.MULTILINE)
+    if not m:
+        return block.strip(), ""
+    return block[: m.start()].strip(), block[m.start() :].strip()
+
+
+def split_first_h2_heading(block: str) -> tuple[str, str, str]:
+    m = re.search(r"(?m)^##\s+(.+)$", block)
+    if not m:
+        return "", "", block.strip()
+    heading = m.group(1).strip()
+    start = m.start()
+    next_m = re.search(r"(?m)^##\s+", block[m.end() :])
+    if next_m:
+        content_end = m.end() + next_m.start()
+        content = block[m.end() :content_end].strip()
+        rest = block[content_end:].strip()
+    else:
+        content = block[m.end() :].strip()
+        rest = ""
+    return heading, content, rest
+
+
 def markdown_block_to_latex(block: str, *, shift_heading: int = 0) -> str:
     if not block.strip():
         return ""
@@ -140,6 +164,19 @@ def build_references_section(block: str) -> str:
     for idx, item in enumerate(items, 1):
         parts.append(f"\\bibitem{{ref{idx}}} {markdown_block_to_latex(wrap_urls(item))}")
     parts.append("\\end{thebibliography}")
+    return "\n\n".join(parts).strip() + "\n"
+
+
+def build_appendix_section(title: str, block: str) -> str:
+    title = re.sub(r"附\s*录", "附录", title).strip()
+    body_tex = markdown_block_to_latex(block)
+    parts = [
+        "\\clearpage",
+        f"\\section*{{{title}}}",
+        f"\\addcontentsline{{toc}}{{section}}{{{title}}}",
+    ]
+    if body_tex:
+        parts.append(body_tex)
     return "\n\n".join(parts).strip() + "\n"
 
 
@@ -325,9 +362,26 @@ def promote_chapter4_equations(body_tex: str) -> str:
 
 
 def normalize_body_latex(body_tex: str) -> str:
+    def convert_calc_width_expr(match: re.Match[str]) -> str:
+        tabsep_count = float(match.group(1))
+        ratio = float(match.group(2))
+        return (
+            "p{\\dimexpr "
+            + f"{ratio:.6f}\\linewidth - {tabsep_count * ratio:.6f}\\tabcolsep\\relax"
+            + "}"
+        )
+
+    # Convert pandoc width form `p{(\linewidth - n\tabcolsep) * \real{x}}`
+    # into TeX-safe `\dimexpr` form to avoid table overflow and bad alignment.
+    body_tex = re.sub(
+        r"p\{\(\\linewidth\s*-\s*([0-9]+)\s*\\tabcolsep\)\s*\*\s*\\real\{([0-9.]+)\}\}",
+        convert_calc_width_expr,
+        body_tex,
+    )
+
     replacements = {
-        "\\begin{longtable}[]{@{}lrr@{}}": "\\begin{longtable}[]{@{}\n  >{\\raggedright\\arraybackslash}p{(\\linewidth - 4\\tabcolsep) * \\real{0.18}}\n  >{\\raggedleft\\arraybackslash}p{(\\linewidth - 4\\tabcolsep) * \\real{0.41}}\n  >{\\raggedleft\\arraybackslash}p{(\\linewidth - 4\\tabcolsep) * \\real{0.41}}@{}}",
-        "\\begin{longtable}[]{@{}ccc@{}}": "\\begin{longtable}[]{@{}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 4\\tabcolsep) * \\real{0.16}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 4\\tabcolsep) * \\real{0.42}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 4\\tabcolsep) * \\real{0.42}}@{}}",
+        "\\begin{longtable}[]{@{}lrr@{}}": "\\begin{longtable}[]{@{}\n  >{\\raggedright\\arraybackslash}p{\\dimexpr0.18\\linewidth-0.72\\tabcolsep\\relax}\n  >{\\raggedleft\\arraybackslash}p{\\dimexpr0.41\\linewidth-1.64\\tabcolsep\\relax}\n  >{\\raggedleft\\arraybackslash}p{\\dimexpr0.41\\linewidth-1.64\\tabcolsep\\relax}@{}}",
+        "\\begin{longtable}[]{@{}ccc@{}}": "\\begin{longtable}[]{@{}\n  >{\\centering\\arraybackslash}p{\\dimexpr0.16\\linewidth-0.64\\tabcolsep\\relax}\n  >{\\centering\\arraybackslash}p{\\dimexpr0.42\\linewidth-1.68\\tabcolsep\\relax}\n  >{\\centering\\arraybackslash}p{\\dimexpr0.42\\linewidth-1.68\\tabcolsep\\relax}@{}}",
         "\\begin{longtable}[]{@{}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.2174}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.2174}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.2174}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.2174}}\n  >{\\raggedright\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.1304}}@{}}": "\\begin{longtable}[]{@{}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.12}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.18}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.18}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.18}}\n  >{\\raggedright\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.34}}@{}}",
         "\\begin{longtable}[]{@{}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 10\\tabcolsep) * \\real{0.1786}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 10\\tabcolsep) * \\real{0.1786}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 10\\tabcolsep) * \\real{0.1786}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 10\\tabcolsep) * \\real{0.1786}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 10\\tabcolsep) * \\real{0.1786}}\n  >{\\raggedright\\arraybackslash}p{(\\linewidth - 10\\tabcolsep) * \\real{0.1071}}@{}}": "\\begin{longtable}[]{@{}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 10\\tabcolsep) * \\real{0.11}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 10\\tabcolsep) * \\real{0.09}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 10\\tabcolsep) * \\real{0.14}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 10\\tabcolsep) * \\real{0.14}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 10\\tabcolsep) * \\real{0.14}}\n  >{\\raggedright\\arraybackslash}p{(\\linewidth - 10\\tabcolsep) * \\real{0.38}}@{}}",
         "\\begin{longtable}[]{@{}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.2000}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.2000}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.2000}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.2000}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.2000}}@{}}": "\\begin{longtable}[]{@{}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.16}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.12}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.24}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.24}}\n  >{\\centering\\arraybackslash}p{(\\linewidth - 8\\tabcolsep) * \\real{0.24}}@{}}",
@@ -336,6 +390,7 @@ def normalize_body_latex(body_tex: str) -> str:
         body_tex = body_tex.replace(src, dst)
     # Keep table header minipages constrained to the column width.
     body_tex = body_tex.replace("\\begin{minipage}[b]{\\linewidth}", "\\begin{minipage}[t]{\\hsize}")
+    body_tex = body_tex.replace("\\begin{minipage}[t]{\\hsize}\\raggedright", "\\begin{minipage}[t]{\\hsize}\\centering")
     body_tex = normalize_inline_terms(body_tex)
     body_tex = add_longtable_continued_labels(body_tex)
     body_tex = promote_chapter4_equations(body_tex)
@@ -377,14 +432,14 @@ def main() -> None:
     body_main, rest = split_section(body_block, "参考文献")
     refs_block, rest = split_next_h2(rest)
     ack_block = ""
+    appendix_title = ""
     appendix_block = ""
     if rest:
-        ack_block, rest = split_section(rest, "附 录A 关键复现实验命令（当前保留结果）")
+        ack_block, rest = split_section_by_heading_pattern(rest, r"^##\s*附\s*录[A-Za-zＡ-Ｚ]?")
         if ack_block:
             ack_block = ack_block.removeprefix("## 致  谢").strip()
-        appendix_block = rest
-        if appendix_block:
-            appendix_block = appendix_block.removeprefix("## 附 录A 关键复现实验命令（当前保留结果）").strip()
+        if rest:
+            appendix_title, appendix_block, _tail = split_first_h2_heading(rest)
 
     cn_abs_md, cn_keywords = extract_keywords(cn_abs_block, "关键词")
     en_abs_md, en_keywords = extract_keywords(en_abs_block, "Keywords")
@@ -396,10 +451,11 @@ def main() -> None:
     body_parts = [normalize_body_latex(markdown_block_to_latex(body_main, shift_heading=-1))]
     if refs_block:
         body_parts.append(build_references_section(refs_block))
+    if appendix_block:
+        appendix_title = appendix_title or "附 录A"
+        body_parts.append(build_appendix_section(appendix_title, appendix_block))
     if ack_block:
         body_parts.append(build_unnumbered_section("致 谢", ack_block))
-    if appendix_block:
-        body_parts.append(build_unnumbered_section("附 录A 关键复现实验命令（当前保留结果）", appendix_block))
     body_tex = "\n\n".join(x.strip() for x in body_parts if x.strip()) + "\n"
     convert_svg_assets(body_tex)
     (OUT_DIR / "body.tex").write_text(body_tex, encoding="utf-8")
