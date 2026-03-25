@@ -1123,10 +1123,19 @@ S_m(D,r) = S_{0,m} + DrB_m
 
 为保证分析口径可追溯，本章额外固定``对比对象、运行平台与数据量''三类约束。尤其在节点级真实多设备代理场景中，本文采用``\textbf{全节点共享同一 \thesisterm{shared\_eventtag.bin} 格式缓存文件，节点结果文件独立输出}''的方式，重点观察共享元数据在并发访问下的竞争与收益释放。
 
-{\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}
   >{\centering\arraybackslash}p{\dimexpr 0.625000\linewidth - 1.250000\tabcolsep\relax}
   >{\raggedright\arraybackslash}p{\dimexpr 0.375000\linewidth - 0.750000\tabcolsep\relax}@{}}
+\caption{本章统一实验设计与评估口径}\label{tbl:exp-design-scope}\tabularnewline
+\toprule\noalign{}
+\begin{minipage}[t]{\hsize}\centering
+维度
+\end{minipage} & \begin{minipage}[t]{\hsize}\centering
+本文实验口径
+\end{minipage} \\
+\midrule\noalign{}
+\endfirsthead
+\multicolumn{2}{r}{（续表\thetable）} \\
 \toprule\noalign{}
 \begin{minipage}[t]{\hsize}\centering
 维度
@@ -1147,7 +1156,8 @@ S_m(D,r) = S_{0,m} + DrB_m
 真实多设备空间口径 & 集群总空间；共享格式文档在每个模式下仅计算一次 \\
 空间交叉点附加扫描 & \thesisterm{records} 从 \thesisterm{1} 到 \thesisterm{100000} 共 13 个点；\thesisterm{repeats=2}；指标为 \thesisterm{total\_bytes} \\
 \end{longtable}
-}
+
+后续 5.2～5.7 的表格与图像分析均以表\ref{tbl:exp-design-scope}为统一口径，确保各场景对比结论可直接互相参照。
 
 图像呈现遵循``主图承载结论、辅图解释机制''的统一规则，即每组实验至少保留一张能够直接支撑判断的主图，并辅以差值图或分解图说明原因，避免只有曲线堆叠而缺少结论指向。
 
@@ -1727,13 +1737,19 @@ hilog & +3.63\% & +3.58\% \\
 
 \begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
 
+\clearpage
+
 \renewcommand{\refname}{参考文献}
 
 \addcontentsline{toc}{section}{参考文献}
 
 \begin{thebibliography}{99}
 
-\setlength{\itemsep}{0.2\baselineskip}
+\setlength{\itemsep}{0pt}
+
+\setlength{\parsep}{0pt}
+
+\setlength{\parskip}{0pt}
 
 \bibitem{ref1} Linux Kernel Documentation. Lockless Ring Buffer Design{[}EB/OL{]}. \url{https://www.kernel.org/doc/html/latest/trace/ring-buffer-design.html}.
 
@@ -1785,48 +1801,6 @@ hilog & +3.63\% & +3.58\% \\
 
 \clearpage
 
-\section*{附录A 关键复现实验命令（阶段化复现）}
-
-\addcontentsline{toc}{section}{附录A 关键复现实验命令（阶段化复现）}
-
-\begin{Shaded}
-\begin{Highlighting}[]
-\CommentTok{\# 1) 全分组语义对齐矩阵（single/multi/真实多设备模拟）}
-\BuiltInTok{cd}\NormalTok{ demo}
-\ExtensionTok{python3}\NormalTok{ scripts/run\_grouped\_semantic\_matrix.py }\DataTypeTok{\textbackslash{}}
-  \AttributeTok{{-}{-}out{-}dir} \StringTok{"}\VariableTok{$(}\BuiltInTok{pwd}\VariableTok{)}\StringTok{/results/paper\_regen/grouped\_semantic\_matrix"}
-
-\CommentTok{\# 2) 最终严格对齐套件（single/本地多设备/真实多设备 5,10,15,20 节点）}
-\ExtensionTok{python3}\NormalTok{ scripts/run\_final\_aligned\_suite.py }\DataTypeTok{\textbackslash{}}
-  \AttributeTok{{-}{-}out{-}dir} \StringTok{"}\VariableTok{$(}\BuiltInTok{pwd}\VariableTok{)}\StringTok{/results/paper\_regen/final\_aligned\_suite"}
-
-\CommentTok{\# 3) 本地初始化竞争（10 进程）}
-\FunctionTok{mkdir} \AttributeTok{{-}p}\NormalTok{ build/bin}
-\FunctionTok{clang} \AttributeTok{{-}O2} \AttributeTok{{-}Wall} \AttributeTok{{-}Wextra} \AttributeTok{{-}std}\OperatorTok{=}\NormalTok{c11 }\AttributeTok{{-}Iinclude} \DataTypeTok{\textbackslash{}}
-  \AttributeTok{{-}o}\NormalTok{ build/bin/optbinlog\_init\_race optbinlog\_init\_race.c }\DataTypeTok{\textbackslash{}}
-\NormalTok{  src/optbinlog\_shared.c src/optbinlog\_eventlog.c}
-\VariableTok{OPTBINLOG\_INIT\_OUT\_DIR}\OperatorTok{=}\StringTok{"}\VariableTok{$(}\BuiltInTok{pwd}\VariableTok{)}\StringTok{/results/paper\_regen/init\_race\_local"} \DataTypeTok{\textbackslash{}}
-\VariableTok{OPTBINLOG\_EVENTLOG\_DIR}\OperatorTok{=}\StringTok{"}\VariableTok{$(}\BuiltInTok{pwd}\VariableTok{)}\StringTok{/eventlogst"} \DataTypeTok{\textbackslash{}}
-\VariableTok{OPTBINLOG\_INIT\_PROCS}\OperatorTok{=}\NormalTok{10 }\VariableTok{OPTBINLOG\_INIT\_REPEATS}\OperatorTok{=}\NormalTok{20 }\VariableTok{OPTBINLOG\_INIT\_WARMUP}\OperatorTok{=}\NormalTok{3 }\DataTypeTok{\textbackslash{}}
-\ExtensionTok{python3}\NormalTok{ scripts/run\_init\_race.py}
-
-\CommentTok{\# 4) 真实多设备模拟节点级初始化竞争（每节点一台设备）}
-\ExtensionTok{python3}\NormalTok{ scripts/run\_l1\_init\_compete.py }\DataTypeTok{\textbackslash{}}
-  \AttributeTok{{-}{-}config}\NormalTok{ configs/l1\_config.linux\_10\_all\_unaligned\_initrace.json }\DataTypeTok{\textbackslash{}}
-  \AttributeTok{{-}{-}tag}\NormalTok{ paper\_init\_compete}
-
-\CommentTok{\# 5) Optbinlog 便捷读取（字段名 + 统计）}
-\FunctionTok{mkdir} \AttributeTok{{-}p}\NormalTok{ build/bin}
-\FunctionTok{clang} \AttributeTok{{-}O2} \AttributeTok{{-}Wall} \AttributeTok{{-}Wextra} \AttributeTok{{-}std}\OperatorTok{=}\NormalTok{c11 }\AttributeTok{{-}Iinclude} \DataTypeTok{\textbackslash{}}
-  \AttributeTok{{-}o}\NormalTok{ build/bin/optbinlog\_read optbinlog\_read.c }\DataTypeTok{\textbackslash{}}
-\NormalTok{  src/optbinlog\_shared.c src/optbinlog\_eventlog.c src/optbinlog\_binlog.c}
-\ExtensionTok{./build/bin/optbinlog\_read} \DataTypeTok{\textbackslash{}}
-  \AttributeTok{{-}{-}shared}\NormalTok{ ./results/paper\_dataset/samples/optbinlog\_read/shared\_eventtag.bin }\DataTypeTok{\textbackslash{}}
-  \AttributeTok{{-}{-}log}\NormalTok{ ./results/paper\_dataset/samples/optbinlog\_read/binary\_run\_000.bin }\DataTypeTok{\textbackslash{}}
-  \AttributeTok{{-}{-}format}\NormalTok{ table }\AttributeTok{{-}{-}limit}\NormalTok{ 20 }\AttributeTok{{-}{-}summary}
-\end{Highlighting}
-\end{Shaded}
-
 \section*{致 谢}
 
 \addcontentsline{toc}{section}{致 谢}
@@ -1834,3 +1808,53 @@ hilog & +3.63\% & +3.58\% \\
 本论文（设计）完成过程中，得到了指导教师在选题、方法、实验组织和写作规范方面的持续指导；也得到了课题组同学在实验环境、脚本复核与结果讨论方面的帮助。在此一并致以诚挚感谢。感谢学院和学校提供的学习与实验条件，感谢家人长期以来的理解与支持。
 
 \begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\clearpage
+
+\section*{附 录}
+
+\addcontentsline{toc}{section}{附录}
+
+\textbf{A 关键复现实验命令（阶段化复现）}
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\item
+  语义对齐矩阵（single/multi/真实多设备模拟）\\
+  cd demo\\
+  python3 scripts/run\_grouped\_semantic\_matrix.py\\
+  --out-dir ./results/paper\_regen/grouped\_semantic\_matrix
+\item
+  最终严格对齐套件（single/本地多设备/真实多设备）\\
+  python3 scripts/run\_final\_aligned\_suite.py\\
+  --out-dir ./results/paper\_regen/final\_aligned\_suite
+\item
+  本地初始化竞争（10 进程）\\
+  mkdir -p build/bin\\
+  clang -O2 -Wall -Wextra -std=c11 -Iinclude\\
+  -o build/bin/optbinlog\_init\_race optbinlog\_init\_race.c\\
+  src/optbinlog\_shared.c src/optbinlog\_eventlog.c\\
+  OPTBINLOG\_INIT\_OUT\_DIR=./results/paper\_regen/init\_race\_local\\
+  OPTBINLOG\_EVENTLOG\_DIR=./eventlogst\\
+  OPTBINLOG\_INIT\_PROCS=10\\
+  OPTBINLOG\_INIT\_REPEATS=20\\
+  OPTBINLOG\_INIT\_WARMUP=3\\
+  python3 scripts/run\_init\_race.py
+\item
+  节点级初始化竞争（每节点一台设备）\\
+  CFG=configs/l1\_config.linux\_10\_all\_unaligned\_initrace.json\\
+  python3 scripts/run\_l1\_init\_compete.py\\
+  --config configs/l1\_config.linux\_10\_all\_unaligned\_initrace.json\\
+  --tag paper\_init\_compete
+\item
+  便捷读取验证（字段名 + 统计）\\
+  mkdir -p build/bin\\
+  clang -O2 -Wall -Wextra -std=c11 -Iinclude\\
+  -o build/bin/optbinlog\_read optbinlog\_read.c\\
+  src/optbinlog\_shared.c src/optbinlog\_eventlog.c src/optbinlog\_binlog.c\\
+  SAMPLE\_DIR=./results/paper\_dataset/samples/optbinlog\_read\\
+  ./build/bin/optbinlog\_read\\
+  --shared ./results/paper\_dataset/samples/optbinlog\_read/shared\_eventtag.bin\\
+  --log ./results/paper\_dataset/samples/optbinlog\_read/binary\_run\_000.bin\\
+  --format table --limit 20 --summary
+\end{enumerate}

@@ -24,8 +24,13 @@
 \usepackage{fancyvrb}
 \definecolor{shadecolor}{RGB}{248,248,248}
 \newenvironment{Shaded}{\begin{snugshade}}{\end{snugshade}}
-\DefineVerbatimEnvironment{Highlighting}{Verbatim}{commandchars=\\\{\},fontsize=\small}
+\DefineVerbatimEnvironment{Highlighting}{Verbatim}{
+  commandchars=\\\{\},
+  formatcom=\songti\zihao{-4}
+}
 \hypersetup{hidelinks}
+\urlstyle{same}
+\renewcommand{\UrlFont}{\tnr\zihao{-4}}
 \Urlmuskip=0mu plus 2mu
 \def\UrlBreaks{\do\/\do-\do\_\do\.\do\#\do\?\do\&\do\=\do\+}
 
@@ -132,6 +137,13 @@
 \newcolumntype{C}[1]{>{\centering\arraybackslash}p{#1}}
 \newcolumntype{R}[1]{>{\raggedleft\arraybackslash}p{#1}}
 \AtBeginEnvironment{longtable}{\small}
+\AtBeginEnvironment{thebibliography}{%
+  \songti\tnr\zihao{-4}\setstretch{1.5}%
+  \setlength{\itemsep}{0pt}%
+  \setlength{\parsep}{0pt}%
+  \setlength{\parskip}{0pt}%
+  \setlength{\parindent}{0pt}%
+}
 \setlength{\LTpre}{0.6\baselineskip}
 \setlength{\LTpost}{0.6\baselineskip}
 \setlength{\LTcapwidth}{\textwidth}
@@ -200,7 +212,7 @@
 
 \graphicspath{{./}{../}{assets/}{thesis_latex/assets/}{thesis_latex/}}
 
-\newcommand{\thesistitle}{基于共享内存事件格式的嵌入式二进制日志系统设计与实现}
+\newcommand{\thesistitle}{嵌入式系统中高效二进制日志管理机制的研究与设计}
 \newcommand{\studentname}{邓泽宇}
 \newcommand{\studentid}{2022302111098}
 \newcommand{\majorname}{软件工程}
@@ -221,20 +233,19 @@
     {\kai\zihao{2} 武汉大学\par}
   }
   \vspace{0.8cm}
-  {\heiti\zihao{2} 本科毕业论文（设计）\par}
+  {\songti\zihao{2} 本科毕业论文（设计）\par}
   \vspace{2.5cm}
   {\kai\zihao{1} \thesistitle\par}
   \vspace{2.5cm}
   {\songti\zihao{4}
-    姓\hspace{1.6em}名：\studentname\par
-    \vspace{0.7em}
-    学\hspace{1.6em}号：\studentid\par
-    \vspace{0.7em}
-    专\hspace{1.6em}业：\majorname\par
-    \vspace{0.7em}
-    学\hspace{1.6em}院：\schoolname\par
-    \vspace{0.7em}
-    指导教师：\advisorname\par
+  \renewcommand{\arraystretch}{1.9}
+  \begin{tabular}{@{}>{\centering\arraybackslash}p{4.6em}>{\centering\arraybackslash}p{1em}>{\centering\arraybackslash}p{12em}@{}}
+    姓\hfill 名 & ： & \studentname \\
+    学\hfill 号 & ： & \studentid \\
+    专\hfill 业 & ： & \majorname \\
+    学\hfill 院 & ： & \schoolname \\
+    指导教师 & ： & \advisorname \\
+  \end{tabular}\par
   }
   \vfill
   {\songti\zihao{4} \finishdate\par}

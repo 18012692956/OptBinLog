@@ -9,6 +9,7 @@ import shlex
 import shutil
 import subprocess
 import tarfile
+import tempfile
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -37,12 +38,66 @@ def run_subprocess(
     )
 
 
+def run_subprocess_redirected(
+    cmd: List[str],
+    *,
+    text: bool = True,
+) -> subprocess.CompletedProcess:
+    # limactl shell can intermittently fail with "Bad port '0'" when its
+    # stdio is captured directly by subprocess pipes. Redirecting stdio to
+    # temp files keeps the transport stable while preserving the output for
+    # later inspection and retry logic.
+    out_fd, out_path = tempfile.mkstemp(prefix="codex_lima_out_", suffix=".tmp")
+    err_fd, err_path = tempfile.mkstemp(prefix="codex_lima_err_", suffix=".tmp")
+    os.close(out_fd)
+    os.close(err_fd)
+    shell_cmd = f"{quote_cmd(cmd)} > {shlex.quote(out_path)} 2> {shlex.quote(err_path)}"
+    try:
+        proc = subprocess.run(["bash", "-lc", shell_cmd], check=False, capture_output=True, text=True)
+        with open(out_path, "rb") as f:
+            stdout_bytes = f.read()
+        with open(err_path, "rb") as f:
+            stderr_bytes = f.read()
+        if text:
+            stdout = stdout_bytes.decode("utf-8", errors="replace")
+            stderr = stderr_bytes.decode("utf-8", errors="replace")
+        else:
+            stdout = stdout_bytes
+            stderr = stderr_bytes
+        return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+    finally:
+        for path in [out_path, err_path]:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
 def quote_cmd(parts: List[str]) -> str:
     return " ".join(shlex.quote(x) for x in parts)
 
 
 def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
+
+
+def maybe_convert_lima_prefix(node: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(node)
+    if os.environ.get("OPTBINLOG_L1_USE_SSH_PREFIX", "").strip().lower() not in {"1", "true", "yes"}:
+        return out
+    if out.get("transport") != "prefix":
+        return out
+    prefix = out.get("prefix")
+    if not isinstance(prefix, list) or len(prefix) < 3:
+        return out
+    if [str(x) for x in prefix[:2]] != ["limactl", "shell"]:
+        return out
+    instance = str(prefix[2])
+    ssh_cfg = os.path.expanduser(os.path.join("~", ".lima", instance, "ssh.config"))
+    if not os.path.exists(ssh_cfg):
+        return out
+    out["prefix"] = ["ssh", "-F", ssh_cfg, f"lima-{instance}"]
+    return out
 
 
 def parse_args() -> argparse.Namespace:
@@ -60,7 +115,7 @@ def load_config(path: str) -> Dict[str, Any]:
 
 
 def node_defaults(node: Dict[str, Any]) -> Dict[str, Any]:
-    out = dict(node)
+    out = maybe_convert_lima_prefix(node)
     out.setdefault("transport", "local")
     out.setdefault("workdir", ROOT)
     out.setdefault("shell", "bash")
@@ -122,7 +177,10 @@ class NodeExecutor:
             prefix = [str(x) for x in self.node.get("prefix", [])]
             probe_cmd = prefix + [self.shell, "-lc", "true"]
         for attempt in range(max_retry + 1):
-            proc = run_subprocess(cmd, capture=True, text=text, check=False)
+            if is_lima_prefix:
+                proc = run_subprocess_redirected(cmd, text=text)
+            else:
+                proc = run_subprocess(cmd, capture=True, text=text, check=False)
             if proc.returncode == 0:
                 break
             stderr = proc.stderr or ""
@@ -131,7 +189,7 @@ class NodeExecutor:
             if not retryable or attempt >= max_retry:
                 break
             if probe_cmd is not None:
-                run_subprocess(probe_cmd, capture=True, text=text, check=False)
+                run_subprocess_redirected(probe_cmd, text=text)
             time.sleep(1.2 * (attempt + 1))
         assert proc is not None
         if check and proc.returncode != 0:
@@ -159,7 +217,16 @@ class NodeExecutor:
         # For remote transports, stream tar.
         inner = f"cd {shlex.quote(remote_dir)}; tar -cf - ."
         cmd = self._build_outer_cmd(inner)
-        proc = run_subprocess(cmd, capture=True, text=False, check=False)
+        is_lima_prefix = (
+            self.transport == "prefix"
+            and isinstance(self.node.get("prefix"), list)
+            and len(self.node.get("prefix")) > 0
+            and str(self.node.get("prefix")[0]) == "limactl"
+        )
+        if is_lima_prefix:
+            proc = run_subprocess_redirected(cmd, text=False)
+        else:
+            proc = run_subprocess(cmd, capture=True, text=False, check=False)
         stderr = (proc.stderr or b"").decode("utf-8", errors="replace")
         recoverable_warn = "file changed as we read it" in stderr.lower()
         if proc.returncode != 0 and not (proc.returncode == 1 and recoverable_warn):

@@ -114,14 +114,37 @@ def split_first_h2_heading(block: str) -> tuple[str, str, str]:
     return heading, content, rest
 
 
+def parse_tail_h2_sections(block: str) -> dict[str, tuple[str, str]]:
+    sections: dict[str, tuple[str, str]] = {}
+    matches = list(re.finditer(r"(?m)^##\s+(.+)$", block))
+    if not matches:
+        return sections
+    for idx, match in enumerate(matches):
+        heading = match.group(1).strip()
+        content_start = match.end()
+        content_end = matches[idx + 1].start() if idx + 1 < len(matches) else len(block)
+        content = block[content_start:content_end].strip()
+        heading_key = re.sub(r"\s+", "", heading)
+        if heading_key.startswith("致谢"):
+            sections["ack"] = (heading, content)
+        elif heading_key.startswith("附录"):
+            sections["appendix"] = (heading, content)
+    return sections
+
+
 def markdown_block_to_latex(block: str, *, shift_heading: int = 0) -> str:
     if not block.strip():
         return ""
     return run_pandoc(block.strip(), shift_heading=shift_heading).strip()
 
 
-def build_unnumbered_section(title: str, block: str, *, add_toc: bool = True) -> str:
-    parts = [f"\\section*{{{title}}}"]
+def build_unnumbered_section(
+    title: str, block: str, *, add_toc: bool = True, clear_page: bool = False
+) -> str:
+    parts: list[str] = []
+    if clear_page:
+        parts.append("\\clearpage")
+    parts.append(f"\\section*{{{title}}}")
     if add_toc:
         parts.append(f"\\addcontentsline{{toc}}{{section}}{{{title}}}")
     body_tex = markdown_block_to_latex(block)
@@ -155,25 +178,50 @@ def build_references_section(block: str) -> str:
     if current:
         items.append(current.strip())
 
+    def ensure_ref_end_punct(text: str) -> str:
+        t = text.strip()
+        if not t:
+            return t
+        if t.endswith(("。", ".", "．")):
+            return t
+        return t + "."
+
     parts = [
+        "\\clearpage",
         "\\renewcommand{\\refname}{参考文献}",
         "\\addcontentsline{toc}{section}{参考文献}",
         "\\begin{thebibliography}{99}",
-        "\\setlength{\\itemsep}{0.2\\baselineskip}",
+        "\\setlength{\\itemsep}{0pt}",
+        "\\setlength{\\parsep}{0pt}",
+        "\\setlength{\\parskip}{0pt}",
     ]
     for idx, item in enumerate(items, 1):
+        item = ensure_ref_end_punct(item)
         parts.append(f"\\bibitem{{ref{idx}}} {markdown_block_to_latex(wrap_urls(item))}")
     parts.append("\\end{thebibliography}")
     return "\n\n".join(parts).strip() + "\n"
 
 
 def build_appendix_section(title: str, block: str) -> str:
-    title = re.sub(r"附\s*录", "附录", title).strip()
-    body_tex = markdown_block_to_latex(block)
+    subtitle = ""
+    m = re.match(r"^附\s*录\s*([A-Za-zＡ-Ｚ]?)(.*)$", title.strip())
+    if m:
+        label = m.group(1).strip()
+        tail = re.sub(r"^[\s:：\-、.]+", "", m.group(2).strip())
+        if label and tail:
+            subtitle = f"{label} {tail}"
+        elif tail:
+            subtitle = tail
+        elif label:
+            subtitle = label
+    body_md = block.strip()
+    if subtitle:
+        body_md = f"**{subtitle}**\n\n{body_md}"
+    body_tex = markdown_block_to_latex(body_md)
     parts = [
         "\\clearpage",
-        f"\\section*{{{title}}}",
-        f"\\addcontentsline{{toc}}{{section}}{{{title}}}",
+        "\\section*{附 录}",
+        "\\addcontentsline{toc}{section}{附录}",
     ]
     if body_tex:
         parts.append(body_tex)
@@ -435,11 +483,11 @@ def main() -> None:
     appendix_title = ""
     appendix_block = ""
     if rest:
-        ack_block, rest = split_section_by_heading_pattern(rest, r"^##\s*附\s*录[A-Za-zＡ-Ｚ]?")
-        if ack_block:
-            ack_block = ack_block.removeprefix("## 致  谢").strip()
-        if rest:
-            appendix_title, appendix_block, _tail = split_first_h2_heading(rest)
+        tail_sections = parse_tail_h2_sections(rest)
+        if "ack" in tail_sections:
+            _ack_title, ack_block = tail_sections["ack"]
+        if "appendix" in tail_sections:
+            appendix_title, appendix_block = tail_sections["appendix"]
 
     cn_abs_md, cn_keywords = extract_keywords(cn_abs_block, "关键词")
     en_abs_md, en_keywords = extract_keywords(en_abs_block, "Keywords")
@@ -451,11 +499,11 @@ def main() -> None:
     body_parts = [normalize_body_latex(markdown_block_to_latex(body_main, shift_heading=-1))]
     if refs_block:
         body_parts.append(build_references_section(refs_block))
-    if appendix_block:
-        appendix_title = appendix_title or "附 录A"
-        body_parts.append(build_appendix_section(appendix_title, appendix_block))
     if ack_block:
-        body_parts.append(build_unnumbered_section("致 谢", ack_block))
+        body_parts.append(build_unnumbered_section("致 谢", ack_block, clear_page=True))
+    if appendix_block:
+        appendix_title = appendix_title or "附 录"
+        body_parts.append(build_appendix_section(appendix_title, appendix_block))
     body_tex = "\n\n".join(x.strip() for x in body_parts if x.strip()) + "\n"
     convert_svg_assets(body_tex)
     (OUT_DIR / "body.tex").write_text(body_tex, encoding="utf-8")

@@ -9,6 +9,7 @@ import shlex
 import shutil
 import statistics
 import subprocess
+import tempfile
 from typing import Dict, List, Tuple
 
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -61,6 +62,33 @@ def run_cmd(cmd: List[str], cwd: str = ROOT, env: Dict[str, str] = None, text: b
     return proc
 
 
+def run_redirected_cmd(cmd: List[str], cwd: str = ROOT, text: bool = True) -> subprocess.CompletedProcess:
+    out_fd, out_path = tempfile.mkstemp(prefix="codex_group_out_", suffix=".tmp")
+    err_fd, err_path = tempfile.mkstemp(prefix="codex_group_err_", suffix=".tmp")
+    os.close(out_fd)
+    os.close(err_fd)
+    shell_cmd = f"{' '.join(shlex.quote(x) for x in cmd)} > {shlex.quote(out_path)} 2> {shlex.quote(err_path)}"
+    try:
+        proc = subprocess.run(["bash", "-lc", shell_cmd], cwd=cwd, text=True, capture_output=True, check=False)
+        with open(out_path, "rb") as f:
+            stdout_bytes = f.read()
+        with open(err_path, "rb") as f:
+            stderr_bytes = f.read()
+        if text:
+            stdout = stdout_bytes.decode("utf-8", errors="replace")
+            stderr = stderr_bytes.decode("utf-8", errors="replace")
+        else:
+            stdout = stdout_bytes
+            stderr = stderr_bytes
+        return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+    finally:
+        for path in [out_path, err_path]:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
 def run_linux_shell(
     instance: str,
     script: str,
@@ -68,12 +96,7 @@ def run_linux_shell(
     text: bool = True,
     check: bool = True,
 ) -> subprocess.CompletedProcess:
-    proc = subprocess.run(
-        ["limactl", "shell", instance, "--", "bash", "-lc", script],
-        cwd=cwd,
-        text=text,
-        capture_output=True,
-    )
+    proc = run_redirected_cmd(["limactl", "shell", instance, "--", "bash", "-lc", script], cwd=cwd, text=text)
     if check and proc.returncode != 0:
         raise RuntimeError(
             "linux command failed\nscript: {}\nstdout:\n{}\nstderr:\n{}".format(
@@ -351,7 +374,13 @@ def prepare_l1_config(template_path: str, out_path: str, group: dict, args: argp
 
     nodes = cfg.get("nodes", [])
     for node in nodes:
+        # Use the shared host-mounted workspace path so every Lima node resolves
+        # the same sources and build outputs without stale per-VM home paths.
+        node["workdir"] = ROOT
         node["build_cmd"] = l1_bench_build_cmd()
+        node["bench_bin"] = "./build/bin/optbinlog_bench_linux"
+        node["bench_prefix"] = ""
+        node["native_align_required"] = True
         node["eventlog_dir"] = sem_dir
         node["modes"] = f"text,binary,{group['peer']}"
         node["baseline"] = "text"
@@ -362,16 +391,26 @@ def prepare_l1_config(template_path: str, out_path: str, group: dict, args: argp
         if args.l1_disable_netem:
             node.pop("netem", None)
         if group["peer"] == "ftrace":
+            node["bench_prefix"] = "sudo -n"
             node["trace_marker"] = args.l1_trace_marker
         else:
             node.pop("trace_marker", None)
+        node.pop("syslog_source", None)
 
     save_json(out_path, cfg)
     return out_path
 
 
 def run_l1_group(config_path: str, tag: str) -> str:
-    run_cmd(["python3", os.path.join(SCRIPTS_DIR, "run_l1_suite.py"), "--config", config_path, "--tag", tag], cwd=ROOT)
+    env = os.environ.copy()
+    # Keep grouped runs on the same stable SSH-backed Lima path as the
+    # successful thesis-aligned L1 experiments.
+    env.setdefault("OPTBINLOG_L1_USE_SSH_PREFIX", "1")
+    run_cmd(
+        ["python3", os.path.join(SCRIPTS_DIR, "run_l1_suite.py"), "--config", config_path, "--tag", tag],
+        cwd=ROOT,
+        env=env,
+    )
     return os.path.join(ROOT, "results", tag, "l1_summary.json")
 
 
