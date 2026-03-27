@@ -8,6 +8,7 @@
 #include <limits.h>
 #include <sys/stat.h>
 
+/* 去掉一行两端空白，便于统一解析。 */
 static char* trim(char* s) {
     while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n') s++;
     char* end = s + strlen(s);
@@ -16,12 +17,14 @@ static char* trim(char* s) {
     return s;
 }
 
+/* 初始化 tag 列表容器。 */
 void optbinlog_taglist_init(OptbinlogTagList* list) {
     list->items = NULL;
     list->len = 0;
     list->cap = 0;
 }
 
+/* 追加一个 tag 到动态数组，容量不足时扩容。 */
 static int taglist_push(OptbinlogTagList* list, const OptbinlogTagDef* tag) {
     if (list->len == list->cap) {
         size_t new_cap = list->cap ? list->cap * 2 : 8;
@@ -36,6 +39,7 @@ static int taglist_push(OptbinlogTagList* list, const OptbinlogTagDef* tag) {
     return 0;
 }
 
+/* 释放 tag 列表及每个 tag 的字段数组。 */
 void optbinlog_taglist_free(OptbinlogTagList* list) {
     for (size_t i = 0; i < list->len; i++) {
         free(list->items[i].eles);
@@ -44,6 +48,11 @@ void optbinlog_taglist_free(OptbinlogTagList* list) {
 }
 
 static int parse_elements(const char* line, OptbinlogTagDef* tag, const char* path, int line_no) {
+    /*
+     * 解析一行里的 "(name|type|bits)" 重复片段。
+     * 这里故意使用严格校验：schema 在初始化阶段尽早失败，
+     * 避免把错误元数据带到运行态编码/解码路径。
+     */
     const char* p = line;
     int cap = 4;
     tag->eles = calloc((size_t)cap, sizeof(OptbinlogTagEleDef));
@@ -89,6 +98,7 @@ static int parse_elements(const char* line, OptbinlogTagDef* tag, const char* pa
     return 0;
 }
 
+/* 解析单个事件定义文件，逐行生成 tag 定义。 */
 static int parse_eventlog_file(const char* path, OptbinlogTagList* out) {
     FILE* fp = fopen(path, "r");
     if (!fp) {
@@ -126,6 +136,7 @@ static int parse_eventlog_file(const char* path, OptbinlogTagList* out) {
             break;
         }
 
+        /* 从当前行构造一个 tag，并追加到列表。 */
         OptbinlogTagDef tag;
         memset(&tag, 0, sizeof(tag));
         tag.tag_id = (int)tag_id;
@@ -152,6 +163,7 @@ typedef struct {
     size_t cap;
 } PathList;
 
+/* 向文件路径列表追加一项。 */
 static int path_list_push(PathList* list, const char* path) {
     if (list->len == list->cap) {
         size_t new_cap = list->cap ? list->cap * 2 : 16;
@@ -166,6 +178,7 @@ static int path_list_push(PathList* list, const char* path) {
     return 0;
 }
 
+/* 释放路径列表。 */
 static void path_list_free(PathList* list) {
     if (!list) return;
     for (size_t i = 0; i < list->len; i++) free(list->items[i]);
@@ -175,17 +188,20 @@ static void path_list_free(PathList* list) {
     list->cap = 0;
 }
 
+/* 路径字典序比较函数（qsort 使用）。 */
 static int path_cmp(const void* a, const void* b) {
     const char* const* pa = (const char* const*)a;
     const char* const* pb = (const char* const*)b;
     return strcmp(*pa, *pb);
 }
 
+/* 判断文件名是否为 .txt 结尾。 */
 static int has_txt_suffix(const char* name) {
     size_t n = strlen(name);
     return (n >= 4 && strcmp(name + n - 4, ".txt") == 0) ? 1 : 0;
 }
 
+/* 扫描目录并解析全部事件定义文件。 */
 int optbinlog_parse_eventlog_dir(const char* dirpath, OptbinlogTagList* out) {
     DIR* dir = opendir(dirpath);
     if (!dir) {
@@ -217,6 +233,10 @@ int optbinlog_parse_eventlog_dir(const char* dirpath, OptbinlogTagList* out) {
         return -1;
     }
 
+    /*
+     * 固定遍历顺序：同一目录内容应得到稳定的解析结果，
+     * 便于后续做 schema hash 与复现实验。
+     */
     qsort(files.items, files.len, sizeof(files.items[0]), path_cmp);
     for (size_t i = 0; i < files.len; i++) {
         if (parse_eventlog_file(files.items[i], out) != 0) {

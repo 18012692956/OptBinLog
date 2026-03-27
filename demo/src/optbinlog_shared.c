@@ -27,6 +27,7 @@ static int OPTBINLOG_MALLOC_OFFSET = 0;
 static size_t OPTBINLOG_SHAREDMEM = 0;
 static int OPTBINLOG_STRICT_PERM = 0;
 
+/* 将初始化关键事件写入 trace 文件，便于并发竞争分析。 */
 static void trace_event(const char* event) {
     const char* path = getenv("OPTBINLOG_TRACE_PATH");
     if (!path || !event) return;
@@ -44,18 +45,21 @@ static void trace_event(const char* event) {
     close(fd);
 }
 
+/* 获取单调时钟毫秒值（用于超时/等待统计）。 */
 static uint64_t monotonic_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000ull + (uint64_t)ts.tv_nsec / 1000000ull;
 }
 
+/* 获取实时时钟纳秒值（用于生成信息记录）。 */
 static uint64_t realtime_ns(void) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
+/* 读取并裁剪环境变量整数参数。 */
 static int getenv_int(const char* name, int default_value, int min_value, int max_value) {
     const char* raw = getenv(name);
     if (!raw || !raw[0]) return default_value;
@@ -67,6 +71,7 @@ static int getenv_int(const char* name, int default_value, int min_value, int ma
     return (int)v;
 }
 
+/* 生成共享文件对应的锁文件路径（shared_path + ".lock"）。 */
 static char* make_lock_path(const char* shared_path) {
     size_t n = strlen(shared_path) + 6;
     char* lock_path = malloc(n);
@@ -81,6 +86,13 @@ static int acquire_init_lock(const char* shared_path,
                              char** lock_path_out,
                              uint32_t* wait_loops,
                              uint32_t* wait_ms) {
+    /*
+     * 获取初始化锁，保证“单创建者”语义。
+     * 支持两种策略：
+     * 1) flock（默认）
+     * 2) create_excl（通过 O_EXCL 竞争锁文件）
+     * 其他进程会等待并按超时参数退出。
+     */
     int timeout_ms = getenv_int("OPTBINLOG_INIT_LOCK_TIMEOUT_MS", 5000, 100, 120000);
     int sleep_us = getenv_int("OPTBINLOG_INIT_LOCK_SLEEP_US", 10000, 100, 1000000);
     const char* lock_mode_env = getenv("OPTBINLOG_INIT_LOCK_MODE");
@@ -181,6 +193,7 @@ static int acquire_init_lock(const char* shared_path,
     }
 }
 
+/* 释放初始化锁并清理锁文件资源。 */
 static void release_init_lock(int* lock_fd, int lock_mode, char** lock_path) {
     if (!lock_fd || *lock_fd < 0) return;
     if (lock_mode == 0) {
@@ -197,6 +210,7 @@ static void release_init_lock(int* lock_fd, int lock_mode, char** lock_path) {
     *lock_fd = -1;
 }
 
+/* 在共享内存块上做线性分配（简单 bump allocator）。 */
 static void* optbinlog_malloc(size_t size) {
     void* addr = NULL;
     if ((size_t)OPTBINLOG_MALLOC_OFFSET + size > OPTBINLOG_SHAREDMEM) {
@@ -207,18 +221,21 @@ static void* optbinlog_malloc(size_t size) {
     return addr;
 }
 
+/* 将位图中 idx 位置置 1，表示对应 tag 存在。 */
 static void bitmap_set(OptbinlogBitmap* bm, int idx) {
     int byte_i = idx / 8;
     int bit_i = idx % 8;
     bm->bits[byte_i] |= (uint8_t)(1u << bit_i);
 }
 
+/* 查询位图中 idx 是否被置位。 */
 int optbinlog_bitmap_get(const OptbinlogBitmap* bm, int idx) {
     int byte_i = idx / 8;
     int bit_i = idx % 8;
     return (bm->bits[byte_i] & (uint8_t)(1u << bit_i)) ? 1 : 0;
 }
 
+/* 返回位图中最后一个置位位置 + 1。 */
 int optbinlog_bitmap_get_max(const OptbinlogBitmap* bm) {
     int max_idx = 0;
     for (int i = 0; i < OPTBINLOG_EVENT_TAG_ARRAY_LEN; i++) {
@@ -229,6 +246,7 @@ int optbinlog_bitmap_get_max(const OptbinlogBitmap* bm) {
     return max_idx;
 }
 
+/* 统计一个位图块中置位数量。 */
 static int bitmap_count_ones(const OptbinlogBitmap* bm) {
     int cnt = 0;
     for (int i = 0; i < OPTBINLOG_EVENT_TAG_ARRAY_LEN; i++) {
@@ -237,6 +255,7 @@ static int bitmap_count_ones(const OptbinlogBitmap* bm) {
     return cnt;
 }
 
+/* 统计位图从 0 到 idx（含）范围内置位数量。 */
 static int bitmap_rank_inclusive(const OptbinlogBitmap* bm, int idx) {
     int cnt = 0;
     for (int i = 0; i <= idx; i++) {
@@ -245,6 +264,7 @@ static int bitmap_rank_inclusive(const OptbinlogBitmap* bm, int idx) {
     return cnt;
 }
 
+/* 将 schema 字符类型映射到共享格式里的数字类型码。 */
 static int type_code_from_char(char c) {
     if (c == 'L') return 1;
     if (c == 'D') return 2;
@@ -252,12 +272,14 @@ static int type_code_from_char(char c) {
     return 0;
 }
 
+/* 校验 [offset, offset+len) 是否落在总区间内。 */
 static int range_within(size_t offset, size_t len, size_t total) {
     if (offset > total) return -1;
     if (len > total - offset) return -1;
     return 0;
 }
 
+/* 校验共享文件头和各段偏移布局是否自洽。 */
 static int header_layout_valid(const OptbinlogSharedTag* hdr, size_t map_size) {
     if (hdr->header_version != OPTBINLOG_SHARED_HEADER_VERSION) return -1;
     if (hdr->num_arrays == 0 || hdr->num_arrays > 1000000u) return -1;
@@ -277,6 +299,7 @@ static int header_layout_valid(const OptbinlogSharedTag* hdr, size_t map_size) {
     return 0;
 }
 
+/* 打开并 mmap 共享文件；create=1 时会新建并设置大小。 */
 static void* map_file(const char* path, size_t size, int create, int* out_fd) {
     int flags = create ? (O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_EXCL) : (O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
     int fd = open(path, flags, 0644);
@@ -302,6 +325,7 @@ static void* map_file(const char* path, size_t size, int create, int* out_fd) {
     return addr;
 }
 
+/* 计算共享布局总字节数。 */
 static size_t sharedmem_size_get(int num_arrays, int tag_count, int num_eles) {
     size_t sharedmem = 0;
     sharedmem += sizeof(OptbinlogSharedTag);
@@ -311,6 +335,7 @@ static size_t sharedmem_size_get(int num_arrays, int tag_count, int num_eles) {
     return sharedmem;
 }
 
+/* 校验共享文件基本合法性与权限策略。 */
 static int validate_shared_file(int fd, const char* shared_path, struct stat* st) {
     if (fstat(fd, st) < 0) return -1;
     if (OPTBINLOG_STRICT_PERM) {
@@ -322,6 +347,7 @@ static int validate_shared_file(int fd, const char* shared_path, struct stat* st
     return 0;
 }
 
+/* 设置是否启用严格权限检查。 */
 int optbinlog_shared_set_strict_perm(int strict_perm) {
     OPTBINLOG_STRICT_PERM = strict_perm ? 1 : 0;
     return 0;
@@ -333,6 +359,7 @@ static int open_existing_shared_internal(const char* shared_path,
                                          void** base,
                                          size_t* size,
                                          OptbinlogSharedTag** header) {
+    /* 只读打开现有共享文件，并在映射后做完整一致性校验。 */
     int fd = open(shared_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
     if (fd < 0) return -1;
 
@@ -348,6 +375,10 @@ static int open_existing_shared_internal(const char* shared_path,
         return -1;
     }
 
+    /*
+     * 暴露给调用方前必须先过校验。
+     * require_schema_hash=1 时，只有 hash 完全一致才能复用。
+     */
     OptbinlogSharedTag* hdr = (OptbinlogSharedTag*)addr;
     if (memcmp(hdr->magic, OPTBINLOG_SHARED_MAGIC, 8) != 0 ||
         hdr->state != OPTBINLOG_INITIALIZED ||
@@ -365,20 +396,24 @@ static int open_existing_shared_internal(const char* shared_path,
     return 0;
 }
 
+/* 打开已有共享文件（不要求 schema hash）。 */
 static int open_existing_shared(const char* shared_path, void** base, size_t* size, OptbinlogSharedTag** header) {
     return open_existing_shared_internal(shared_path, 0, 0, base, size, header);
 }
 
+/* 对外打开共享文件接口。 */
 int optbinlog_shared_open(const char* shared_path, void** base, size_t* size, OptbinlogSharedTag** header) {
     return open_existing_shared(shared_path, base, size, header);
 }
 
+/* 关闭共享文件映射。 */
 void optbinlog_shared_close(void* base, size_t size) {
     if (base && size > 0) {
         munmap(base, size);
     }
 }
 
+/* tag 排序比较器：先 tag_id，再名字。 */
 static int tag_cmp(const void* a, const void* b) {
     const OptbinlogTagDef* ta = (const OptbinlogTagDef*)a;
     const OptbinlogTagDef* tb = (const OptbinlogTagDef*)b;
@@ -387,6 +422,7 @@ static int tag_cmp(const void* a, const void* b) {
     return strncmp(ta->name, tb->name, sizeof(ta->name));
 }
 
+/* FNV-1a 增量哈希。 */
 static uint32_t fnv1a_update(uint32_t h, const void* data, size_t len) {
     const uint8_t* p = (const uint8_t*)data;
     for (size_t i = 0; i < len; i++) {
@@ -396,6 +432,7 @@ static uint32_t fnv1a_update(uint32_t h, const void* data, size_t len) {
     return h;
 }
 
+/* 计算 schema 指纹，用于复用/重建判定。 */
 static uint32_t schema_hash_compute(const OptbinlogTagList* tags) {
     uint32_t h = 2166136261u;
     if (!tags || tags->len == 0) return h;
@@ -421,6 +458,7 @@ static uint32_t schema_hash_compute(const OptbinlogTagList* tags) {
     return h;
 }
 
+/* 对解析后的 schema 做强约束校验。 */
 static int validate_tag_schema(const OptbinlogTagList* tags) {
     if (!tags || tags->len == 0) return -1;
     OptbinlogTagDef* ordered = calloc(tags->len, sizeof(OptbinlogTagDef));
@@ -480,6 +518,14 @@ static int validate_tag_schema(const OptbinlogTagList* tags) {
     return 0;
 }
 
+/*
+ * 从事件定义目录初始化共享元数据文件。
+ * 生命周期：
+ * 1) 解析并校验 schema
+ * 2) 获取初始化锁
+ * 3) 若 hash 匹配则直接复用
+ * 4) 否则重建共享布局
+ */
 int optbinlog_shared_init_from_dir(const char* eventlog_dir, const char* shared_path, int strict_perm) {
     optbinlog_shared_set_strict_perm(strict_perm);
     trace_event("init_start");
@@ -562,6 +608,10 @@ int optbinlog_shared_init_from_dir(const char* eventlog_dir, const char* shared_
         goto out;
     }
 
+    /*
+     * 已存在但不兼容的共享文件视为陈旧版本，持锁重建。
+     * 这样可避免不同 schema 版本混用。
+     */
     if (access(shared_path, F_OK) == 0) {
         trace_event("shared_mismatch_recreate");
         if (unlink(shared_path) != 0 && errno != ENOENT) {
@@ -584,6 +634,11 @@ int optbinlog_shared_init_from_dir(const char* eventlog_dir, const char* shared_
     OPTBINLOG_MALLOC_OFFSET = 0;
     OPTBINLOG_SHAREDMEM = total_size;
 
+    /*
+     * 共享区采用紧凑偏移布局：
+     * [header][bitmap][eventtag][elements...]
+     * 存偏移而非指针，避免不同进程映射基址不一致问题。
+     */
     OptbinlogSharedTag* header = (OptbinlogSharedTag*)optbinlog_malloc(sizeof(OptbinlogSharedTag));
     if (!header) {
         goto fail_cleanup_created;
@@ -641,6 +696,7 @@ int optbinlog_shared_init_from_dir(const char* eventlog_dir, const char* shared_
         }
     }
 
+    /* 发布点：只有完整写入后才将状态切到 INITIALIZED。 */
     header->state = OPTBINLOG_INITIALIZED;
     if (msync(base, total_size, MS_SYNC) != 0) {
         fprintf(stderr, "msync shared failed: %s\n", strerror(errno));
@@ -683,7 +739,13 @@ out:
     return rc;
 }
 
+/* 根据 tag_id 在位图+rank 映射中定位对应的 tag 元数据。 */
 OptbinlogEventTag* optbinlog_lookup_tag(void* base, OptbinlogSharedTag* header, int tag_id, int icnt) {
+    /*
+     * 计算逻辑：
+     * slot = 前面数组置位总数 + 当前数组到 idx 的 rank - 1
+     * 这样在紧凑存储下仍能快速定位。
+     */
     if (tag_id < 0) return NULL;
     int arr = tag_id / OPTBINLOG_EVENT_TAG_ARRAY_LEN;
     int idx = tag_id % OPTBINLOG_EVENT_TAG_ARRAY_LEN;

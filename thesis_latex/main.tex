@@ -192,7 +192,7 @@
 \captionsetup[longtable]{position=top,width=\textwidth}
 
 \renewcommand{\contentsname}{目录}
-\setcounter{tocdepth}{2}
+\setcounter{tocdepth}{3}
 \renewcommand{\cfttoctitlefont}{\hfill\heiti\bfseries\zihao{-2}}
 \renewcommand{\cftaftertoctitle}{\hfill}
 \renewcommand{\cftsecfont}{\songti\bfseries\zihao{-4}}
@@ -300,6 +300,19 @@
 \clearpage
 \pagenumbering{arabic}
 \setcounter{page}{1}
+\makeatletter
+\let\thesis@orig@section\section
+\renewcommand{\section}{%
+  \@ifstar{\thesis@section@star}{\thesis@section@nostar}%
+}
+\newcommand{\thesis@section@star}[1]{%
+  \thesis@orig@section*{#1}%
+}
+\newcommand{\thesis@section@nostar}[1]{%
+  \ifnum\value{section}>0\clearpage\fi
+  \thesis@orig@section{#1}%
+}
+\makeatother
 \input{generated/body.tex}
 
 \end{document}

@@ -24,6 +24,7 @@
 #define OPTBINLOG_FRAME_LEN_MASK 0x1FFFFFFFu
 #define OPTBINLOG_FRAME_VARSTR_BIT 0x20000000u
 #define OPTBINLOG_FRAME_CHECKSUM_SHIFT 30u
+/* frame_header(32位)：[checksum_type:2][varstr:1][payload_len:29] */
 
 typedef struct {
     OptbinlogEventTag* tag;
@@ -60,6 +61,7 @@ typedef struct {
     int cache_len;
     OptbinlogTagCacheStats stats;
 } OptbinlogSharedViewCache;
+/* 进程内缓存：共享映射 + 预构建 tag 索引，用于热路径复用。 */
 
 typedef enum {
     OPTBINLOG_CHECKSUM_CRC32 = 0,
@@ -67,6 +69,7 @@ typedef enum {
     OPTBINLOG_CHECKSUM_NONE = 2,
 } OptbinlogChecksumType;
 
+/* 获取单调时钟纳秒值（用于性能统计）。 */
 static uint64_t now_ns(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -91,6 +94,7 @@ typedef struct {
 
 static OptbinlogRepairSeen g_repair_seen[32];
 
+/* 初始化 CRC32 查找表。 */
 static void crc32_init_table(void) {
     for (uint32_t i = 0; i < 256u; i++) {
         uint32_t c = i;
@@ -102,6 +106,7 @@ static void crc32_init_table(void) {
     crc32_table_ready = 1;
 }
 
+/* 按字节增量更新 CRC32 状态。 */
 static uint32_t crc32_update_state(uint32_t crc, const uint8_t* data, size_t len) {
     if (!crc32_table_ready) {
         crc32_init_table();
@@ -112,6 +117,7 @@ static uint32_t crc32_update_state(uint32_t crc, const uint8_t* data, size_t len
     return crc;
 }
 
+/* 计算完整 CRC32。 */
 static uint32_t crc32_compute(const uint8_t* data, size_t len) {
     uint32_t crc = 0xFFFFFFFFu;
     crc = crc32_update_state(crc, data, len);
@@ -119,6 +125,7 @@ static uint32_t crc32_compute(const uint8_t* data, size_t len) {
 }
 
 #if !OPTBINLOG_HAVE_HW_CRC32C
+/* 初始化 CRC32C 软件查找表。 */
 static void crc32c_init_table(void) {
     for (uint32_t i = 0; i < 256u; i++) {
         uint32_t c = i;
@@ -132,6 +139,7 @@ static void crc32c_init_table(void) {
 #endif
 
 #if !OPTBINLOG_HAVE_HW_CRC32C
+/* 软件路径：增量更新 CRC32C。 */
 static uint32_t crc32c_sw_update_state(uint32_t crc, const uint8_t* data, size_t len) {
     if (!crc32c_table_ready) {
         crc32c_init_table();
@@ -144,6 +152,7 @@ static uint32_t crc32c_sw_update_state(uint32_t crc, const uint8_t* data, size_t
 #endif
 
 #if OPTBINLOG_HAVE_HW_CRC32C
+/* 硬件路径：利用指令集加速 CRC32C。 */
 static uint32_t crc32c_hw_update_state(uint32_t crc, const uint8_t* data, size_t len) {
 #if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
     while (len >= sizeof(uint64_t)) {
@@ -195,6 +204,7 @@ static uint32_t crc32c_hw_update_state(uint32_t crc, const uint8_t* data, size_t
 }
 #endif
 
+/* 以小端写入 32 位整数。 */
 static void write_le32(uint8_t* dst, uint32_t v) {
     dst[0] = (uint8_t)(v & 0xFFu);
     dst[1] = (uint8_t)((v >> 8) & 0xFFu);
@@ -202,10 +212,12 @@ static void write_le32(uint8_t* dst, uint32_t v) {
     dst[3] = (uint8_t)((v >> 24) & 0xFFu);
 }
 
+/* 以小端读取 16 位整数。 */
 static uint16_t read_le16(const uint8_t* src) {
     return (uint16_t)((uint16_t)src[0] | ((uint16_t)src[1] << 8));
 }
 
+/* 以小端读取 32 位整数。 */
 static uint32_t read_le32(const uint8_t* src) {
     return (uint32_t)src[0] |
            ((uint32_t)src[1] << 8) |
@@ -213,6 +225,7 @@ static uint32_t read_le32(const uint8_t* src) {
            ((uint32_t)src[3] << 24);
 }
 
+/* 读取布尔环境变量（缺省为 false）。 */
 static int env_flag_enabled(const char* name) {
     const char* raw = getenv(name);
     if (!raw || !raw[0]) return 0;
@@ -222,6 +235,7 @@ static int env_flag_enabled(const char* name) {
     return 1;
 }
 
+/* 读取布尔环境变量（支持传入默认值）。 */
 static int env_flag_enabled_default(const char* name, int default_value) {
     const char* raw = getenv(name);
     if (!raw || !raw[0]) return default_value ? 1 : 0;
@@ -231,6 +245,7 @@ static int env_flag_enabled_default(const char* name, int default_value) {
     return 1;
 }
 
+/* 读取三态环境变量：-1=auto, 0=off, 1=on。 */
 static int env_tristate(const char* name) {
     const char* raw = getenv(name);
     if (!raw || !raw[0] || strcmp(raw, "auto") == 0 || strcmp(raw, "AUTO") == 0) return -1;
@@ -238,6 +253,7 @@ static int env_tristate(const char* name) {
     return 1;
 }
 
+/* 按环境变量解析校验模式。 */
 static OptbinlogChecksumType checksum_type_from_env(int disable_crc) {
     const char* raw = getenv("OPTBINLOG_BINLOG_CHECKSUM");
     if (disable_crc) return OPTBINLOG_CHECKSUM_NONE;
@@ -253,6 +269,12 @@ static int compute_frame_checksum(OptbinlogChecksumType checksum_type,
                                   const uint8_t* payload,
                                   size_t payload_len,
                                   uint32_t* out_checksum) {
+    /*
+     * 校验覆盖规则：
+     * - crc32   ：只覆盖 payload（兼容旧模式）
+     * - crc32c  ：覆盖 frame_header + payload（默认）
+     * - none    ：校验字段写 0
+     */
     if (checksum_type == OPTBINLOG_CHECKSUM_NONE) {
         *out_checksum = 0u;
         return 0;
@@ -273,6 +295,7 @@ static int compute_frame_checksum(OptbinlogChecksumType checksum_type,
     return 0;
 }
 
+/* 提取文件 mtime 的纳秒部分（跨平台）。 */
 static long stat_mtime_nsec(const struct stat* st) {
 #if defined(__APPLE__) || defined(__MACH__)
     return st->st_mtimespec.tv_nsec;
@@ -285,11 +308,16 @@ static long stat_mtime_nsec(const struct stat* st) {
 }
 
 static int schema_prefers_varstr(const OptbinlogTagCacheStats* stats) {
+    /*
+     * auto-varstr 启发式：
+     * 当字符串字段占比高或最大定长字符串过宽时启用。
+     */
     if (!stats || stats->string_field_count == 0) return 0;
     if (stats->max_string_fixed_bytes >= 128) return 1;
     return stats->total_string_fixed_bytes * 4 >= stats->total_payload_bytes;
 }
 
+/* 释放进程内共享视图缓存。 */
 static void shared_view_cache_close(void) {
     if (g_shared_view_cache.base && g_shared_view_cache.map_size > 0) {
         optbinlog_shared_close(g_shared_view_cache.base, g_shared_view_cache.map_size);
@@ -298,6 +326,7 @@ static void shared_view_cache_close(void) {
     memset(&g_shared_view_cache, 0, sizeof(g_shared_view_cache));
 }
 
+/* 判断缓存是否仍与共享文件版本一致。 */
 static int shared_view_cache_matches(const struct stat* st) {
     if (!g_shared_view_cache.ready) return 0;
     if (!st) return 0;
@@ -314,6 +343,10 @@ static int build_tag_cache(void* base,
                            OptbinlogTagCacheEntry** out_cache,
                            int* out_len,
                            OptbinlogTagCacheStats* out_stats) {
+    /*
+     * 将共享区元数据预展开为 tag_id -> {tag,ele,payload_size} 索引。
+     * 这样写路径可避免每条记录重复做位图/rank 查找。
+     */
     if (!header || header->tag_count == 0 || header->num_arrays == 0) return -1;
     int total_ids = (int)header->num_arrays * OPTBINLOG_EVENT_TAG_ARRAY_LEN;
     OptbinlogTagCacheEntry* cache = calloc((size_t)total_ids, sizeof(OptbinlogTagCacheEntry));
@@ -375,6 +408,7 @@ static int build_tag_cache(void* base,
     return 0;
 }
 
+/* 获取共享视图：命中缓存则复用，否则重新映射并重建缓存。 */
 static int acquire_shared_view(const char* shared_path,
                                void** out_base,
                                size_t* out_map_size,
@@ -440,6 +474,7 @@ static int acquire_shared_view(const char* shared_path,
     return 0;
 }
 
+/* 按小端读取 n 字节无符号整数。 */
 static uint64_t read_uint_n(const uint8_t* data, int nbytes) {
     uint64_t v = 0;
     for (int i = 0; i < nbytes; i++) {
@@ -448,22 +483,26 @@ static uint64_t read_uint_n(const uint8_t* data, int nbytes) {
     return v;
 }
 
+/* 精确读取 n 字节，不足即失败。 */
 static int read_exact(FILE* fp, void* out, size_t n) {
     size_t got = fread(out, 1, n, fp);
     return got == n ? 0 : -1;
 }
 
+/* 精确写入 n 字节，不足即失败。 */
 static int write_exact(FILE* fp, const void* data, size_t n) {
     if (n == 0) return 0;
     return fwrite(data, 1, n, fp) == n ? 0 : -1;
 }
 
+/* 判断 checksum 类型是否在支持范围内。 */
 static int checksum_type_valid(OptbinlogChecksumType checksum_type) {
     return checksum_type == OPTBINLOG_CHECKSUM_CRC32 ||
            checksum_type == OPTBINLOG_CHECKSUM_CRC32C ||
            checksum_type == OPTBINLOG_CHECKSUM_NONE;
 }
 
+/* 查询某个文件 inode 是否已做过尾修复。 */
 static int repair_seen_contains(dev_t st_dev, ino_t st_ino) {
     for (size_t i = 0; i < sizeof(g_repair_seen) / sizeof(g_repair_seen[0]); i++) {
         if (!g_repair_seen[i].valid) continue;
@@ -472,6 +511,7 @@ static int repair_seen_contains(dev_t st_dev, ino_t st_ino) {
     return 0;
 }
 
+/* 记录某个文件 inode 已执行过尾修复。 */
 static void repair_seen_add(dev_t st_dev, ino_t st_ino) {
     for (size_t i = 0; i < sizeof(g_repair_seen) / sizeof(g_repair_seen[0]); i++) {
         if (g_repair_seen[i].valid &&
@@ -488,7 +528,7 @@ static void repair_seen_add(dev_t st_dev, ino_t st_ino) {
             return;
         }
     }
-    /* Simple wrap-around replacement to avoid unbounded state. */
+    /* 环形覆盖，避免该状态集合无限增长。 */
     static size_t g_repair_seen_next = 0;
     size_t idx = g_repair_seen_next % (sizeof(g_repair_seen) / sizeof(g_repair_seen[0]));
     g_repair_seen[idx].valid = 1;
@@ -497,6 +537,7 @@ static void repair_seen_add(dev_t st_dev, ino_t st_ino) {
     g_repair_seen_next++;
 }
 
+/* 扫描并修复日志坏尾：保留到最后一条完整帧为止。 */
 int optbinlog_binlog_recover_tail(const char* log_path, size_t* before_bytes, size_t* after_bytes) {
     if (!log_path || !log_path[0]) {
         errno = EINVAL;
@@ -606,6 +647,7 @@ int optbinlog_binlog_recover_tail(const char* log_path, size_t* before_bytes, si
     return 1;
 }
 
+/* 按策略自动执行一次坏尾修复（append 模式前）。 */
 static int auto_repair_tail_if_needed(const char* log_path) {
     if (!env_flag_enabled_default("OPTBINLOG_BINLOG_RECOVER_TAIL", 1)) {
         return 0;
@@ -644,6 +686,7 @@ static int auto_repair_tail_if_needed(const char* log_path) {
     return 0;
 }
 
+/* 写入记录数组为二进制帧流。 */
 int optbinlog_binlog_write(const char* shared_path, const char* log_path, const OptbinlogRecord* records, size_t count) {
     const char* prof_env = getenv("OPTBINLOG_PROFILE");
     int profile = (prof_env && prof_env[0] == '1') ? 1 : 0;
@@ -770,11 +813,13 @@ int optbinlog_binlog_write(const char* shared_path, const char* log_path, const 
         }
 
         uint64_t t1 = profile ? now_ns() : 0;
+        /* 组装帧头并写入：长度 + varstr 标志 + checksum 类型。 */
         uint32_t frame_header = (uint32_t)payload_size;
         if (varstr) frame_header |= OPTBINLOG_FRAME_VARSTR_BIT;
         frame_header |= ((uint32_t)checksum_type << OPTBINLOG_FRAME_CHECKSUM_SHIFT);
         write_le32(dst, frame_header);
         size_t off = sizeof(uint32_t);
+        /* payload 固定前缀：timestamp(8) + tag_id(2) + ele_count(1)。 */
         memcpy(dst + off, &rec->timestamp, sizeof(int64_t));
         off += sizeof(int64_t);
 
@@ -820,6 +865,7 @@ int optbinlog_binlog_write(const char* shared_path, const char* log_path, const 
                     return -1;
                 }
                 if (varstr) {
+                    /* 变长字符串：2 字节长度前缀 + 实际内容。 */
                     size_t slen = 0;
                     if (v->s) {
                         slen = strnlen(v->s, (size_t)ele->len);
@@ -833,6 +879,7 @@ int optbinlog_binlog_write(const char* shared_path, const char* log_path, const 
                         off += slen;
                     }
                 } else {
+                    /* 定长字符串：不足补零，超长截断。 */
                     memset(dst + off, 0, (size_t)ele->len);
                     if (v->s) {
                         size_t slen = strnlen(v->s, (size_t)ele->len);
@@ -916,6 +963,7 @@ int optbinlog_binlog_write(const char* shared_path, const char* log_path, const 
     return 0;
 }
 
+/* 读取并解码二进制帧流，逐条回调输出。 */
 int optbinlog_binlog_read(const char* shared_path, const char* log_path, OptbinlogRecordCallback cb, void* user) {
     void* base = NULL;
     size_t map_size = 0;
@@ -958,6 +1006,7 @@ int optbinlog_binlog_read(const char* shared_path, const char* log_path, Optbinl
             break;
         }
 
+        /* 先读帧头，再按帧头声明规则读取 payload 与 checksum。 */
         uint32_t frame_header = read_le32(len_buf);
         OptbinlogChecksumType checksum_type = (OptbinlogChecksumType)(frame_header >> OPTBINLOG_FRAME_CHECKSUM_SHIFT);
         int varstr = (frame_header & OPTBINLOG_FRAME_VARSTR_BIT) ? 1 : 0;
@@ -1065,6 +1114,7 @@ int optbinlog_binlog_read(const char* shared_path, const char* log_path, Optbinl
                 values[e].d = v;
                 off += sizeof(double);
             } else if (ele->type == 3) {
+                /* 字符串字段：依据 varstr 标志走变长或定长解码分支。 */
                 size_t slen = (size_t)ele->len;
                 if (varstr) {
                     slen = (size_t)read_le16(payload + off);

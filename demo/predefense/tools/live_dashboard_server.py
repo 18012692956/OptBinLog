@@ -136,6 +136,8 @@ h1 {
   font-size:11px; font-weight:700; letter-spacing:.06em;
   text-transform:uppercase; margin-bottom:10px;
   display:flex; align-items:center; gap:6px;
+  white-space:nowrap;
+  flex-shrink:0;
 }
 .ob-card-label::before {
   content:""; width:6px; height:6px; border-radius:50%; flex-shrink:0;
