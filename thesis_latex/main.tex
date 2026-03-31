@@ -22,11 +22,22 @@
 \usepackage{hyperref}
 \usepackage{framed}
 \usepackage{fancyvrb}
-\definecolor{shadecolor}{RGB}{248,248,248}
-\newenvironment{Shaded}{\begin{snugshade}}{\end{snugshade}}
+\definecolor{shadecolor}{RGB}{255,255,255}
+\setlength{\FrameSep}{0pt}
+\setlength{\OuterFrameSep}{0pt}
+\newenvironment{Shaded}{\begin{snugshade}\noindent}{\end{snugshade}}
 \DefineVerbatimEnvironment{Highlighting}{Verbatim}{
   commandchars=\\\{\},
-  formatcom=\songti\zihao{-4}
+  fontsize=\zihao{-5},
+  formatcom=\ttfamily,
+  baselinestretch=1.0,
+  numbers=left,
+  numbersep=4pt,
+  frame=single,
+  framerule=0.3pt,
+  framesep=2pt,
+  xleftmargin=0pt,
+  xrightmargin=0pt
 }
 \hypersetup{hidelinks}
 \urlstyle{same}

@@ -188,17 +188,27 @@ def build_references_section(block: str) -> str:
 
     parts = [
         "\\clearpage",
-        "\\renewcommand{\\refname}{参考文献}",
+        "\\section*{参考文献}",
         "\\addcontentsline{toc}{section}{参考文献}",
-        "\\begin{thebibliography}{99}",
-        "\\setlength{\\itemsep}{0pt}",
-        "\\setlength{\\parsep}{0pt}",
-        "\\setlength{\\parskip}{0pt}",
+        "{\\songti\\tnr\\zihao{-4}\\setstretch{1.5}\\setlength{\\parindent}{0pt}\\setlength{\\parskip}{0pt}",
+        "\\setlength{\\parfillskip}{0pt plus 1fil}",
+        "\\newlength{\\thesisrefnumwd}",
+        "\\newlength{\\thesisrefgap}",
+        "\\setlength{\\thesisrefgap}{0.5em}",
+        f"\\settowidth{{\\thesisrefnumwd}}{{[{len(items)}]}}",
     ]
     for idx, item in enumerate(items, 1):
         item = ensure_ref_end_punct(item)
-        parts.append(f"\\bibitem{{ref{idx}}} {markdown_block_to_latex(wrap_urls(item))}")
-    parts.append("\\end{thebibliography}")
+        item_tex = markdown_block_to_latex(wrap_urls(item)).strip()
+        parts.append(
+            "\\noindent"
+            "\\hangindent=\\dimexpr\\thesisrefnumwd+\\thesisrefgap\\relax"
+            "\\hangafter=1"
+            f"\\makebox[\\thesisrefnumwd][l]{{[{idx}]}}"
+            "\\nobreak\\hspace{\\thesisrefgap}"
+            f"{item_tex}\\par"
+        )
+    parts.append("}")
     return "\n\n".join(parts).strip() + "\n"
 
 
