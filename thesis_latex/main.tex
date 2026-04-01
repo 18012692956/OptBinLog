@@ -215,7 +215,10 @@
 
 \pagestyle{fancy}
 \fancyhf{}
-\fancyhead[C]{\songti\zihao{5} 武汉大学本科毕业论文（设计）}
+\newcommand{\whuheadertext}{%
+  武\hspace{0.55em}汉\hspace{0.55em}大\hspace{0.55em}学\hspace{0.55em}本\hspace{0.55em}科\hspace{0.55em}毕\hspace{0.55em}业\hspace{0.55em}论\hspace{0.55em}文\hspace{0.55em}（\hspace{0.55em}设\hspace{0.55em}计\hspace{0.55em}）%
+}
+\fancyhead[C]{\songti\zihao{5} \whuheadertext}
 \fancyfoot[C]{\thepage}
 \renewcommand{\headrulewidth}{0.4pt}
 \setlength{\headheight}{13pt}
